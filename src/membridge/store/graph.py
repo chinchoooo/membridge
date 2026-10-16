@@ -184,3 +184,30 @@ class GraphStore:
         nodes = {r[0]: int(r[1]) for r in self.query("MATCH (n) RETURN labels(n)[0], count(n)")}
         edges = int(self.query("MATCH ()-[r]->() RETURN count(r)")[0][0])
         return {**{f"nodes_{k.lower()}": v for k, v in nodes.items()}, "edges": edges}
+
+    def neighborhood(self, center: str, depth: int = 1, limit: int = 120) -> dict[str, Any]:
+        """Nodes and edges within `depth` hops of a node id (Memory/Entity/Conversation...). Bounded; never the whole graph."""
+        nodes: dict[str, dict[str, Any]] = {}
+        edges: dict[tuple[str, str, str], dict[str, Any]] = {}
+        title = "coalesce(x.statement, x.name, x.title, x.snippet, x.id)"
+
+        def add(rows: list[list[Any]]) -> None:
+            for r in rows:
+                for nid, label, text, extra in ((r[0], r[1], r[2], r[3]), (r[4], r[5], r[6], r[7])):
+                    nodes.setdefault(nid, {"id": nid, "label": label, "text": str(text)[:140], "status": extra})
+                edges[(r[8], r[9], r[10])] = {"source": r[8], "target": r[9], "type": r[10]}
+
+        q1 = (
+            "MATCH (c {id:$id})-[r]-(x) RETURN c.id, labels(c)[0], coalesce(c.statement,c.name,c.title,c.snippet,c.id), coalesce(c.status,c.type,''), "
+            f"x.id, labels(x)[0], {title}, coalesce(x.status,x.type,''), startNode(r).id, endNode(r).id, type(r) LIMIT {int(limit)}"
+        )
+        add(self.query(q1, {"id": center}))
+        if depth >= 2 and nodes:
+            frontier = [n for n in nodes if n != center and not n.startswith("msg_")][:25]
+            q2 = (
+                "MATCH (c)-[r]-(x) WHERE c.id IN $ids AND x.id <> $id RETURN c.id, labels(c)[0], coalesce(c.statement,c.name,c.title,c.snippet,c.id), "
+                f"coalesce(c.status,c.type,''), x.id, labels(x)[0], {title}, coalesce(x.status,x.type,''), startNode(r).id, endNode(r).id, type(r) "
+                f"LIMIT {int(limit)}"
+            )
+            add(self.query(q2, {"ids": frontier, "id": center}))
+        return {"center": center, "nodes": list(nodes.values())[: limit * 2], "edges": list(edges.values())[: limit * 3], "truncated": len(nodes) >= limit}

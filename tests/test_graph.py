@@ -56,3 +56,12 @@ def test_deleted_memory_leaves_graph_on_sync(export_file: Path, store: Store, gr
     store.conn.execute("UPDATE memories SET status='deleted' WHERE id=?", (mid,))
     graph.sync(store)
     assert graph.query("MATCH (m:Memory {id:$id}) RETURN count(m)", {"id": mid})[0][0] == 0
+
+
+def test_neighborhood_is_bounded_and_connects_memory_to_sources(export_file: Path, store: Store, graph: GraphStore) -> None:
+    _built(export_file, store, graph)
+    mid = store.conn.execute("SELECT id FROM memories WHERE statement LIKE '%switched Atlas%'").fetchone()[0]
+    nb = graph.neighborhood(mid, 2, limit=40)
+    labels = {n["label"] for n in nb["nodes"]}
+    assert {"Memory", "Entity", "Message"} <= labels and any(e["type"] == "SUPERSEDES" for e in nb["edges"])
+    assert len(nb["nodes"]) <= 80 and all(e["source"] in {n["id"] for n in nb["nodes"]} for e in nb["edges"])
