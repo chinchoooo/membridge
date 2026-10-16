@@ -251,7 +251,7 @@ class MemoryService:
         if not 0.0 <= confidence <= 1.0:
             raise ServiceError("confidence must be between 0 and 1")
         doc = self._client_doc(client, content)
-        ents = find_entities(content) + ([EntityRef(project, "project")] if project else [])
+        ents = find_entities(content, self._known_names()) + ([EntityRef(project, "project")] if project else [])
         out = upsert(self.store, Candidate(
             statement=content, category=category, kind="semantic", ref=doc, ref_kind="document", quote=content[:400],
             entities=ents, confidence=confidence, verification=source, method=f"client:{client}",
@@ -260,6 +260,13 @@ class MemoryService:
         self.store.conn.commit()
         self._sync_graph({out.memory_id})
         return {"memory_id": out.memory_id, "result": out.action, "idempotent": out.action == "confirmed"}
+
+    def _known_names(self) -> set[str]:
+        """Canonical names and aliases of every live entity: mentions of known things always link, any casing."""
+        c = self.store.conn
+        names = {r[0] for r in c.execute("SELECT canonical FROM live_entities")}
+        names |= {r[0] for r in c.execute("SELECT a.alias_norm FROM entity_aliases a JOIN live_entities e ON e.id=a.entity_id")}
+        return {n for n in names if len(n) >= 3}
 
     def _client_doc(self, client: str, text: str) -> str:
         did = "doc_" + sha("client_note", client, text)[:24]
@@ -285,7 +292,7 @@ class MemoryService:
         # the decision's "object" is its text, so a later decision on the same project supersedes it
         out = upsert(self.store, Candidate(
             statement=text, category="decision", kind="episodic", subject=pc, predicate=predicate, object=decision[:120],
-            ref=doc, ref_kind="document", quote=text[:400], entities=[EntityRef(project, "project")] + find_entities(decision),
+            ref=doc, ref_kind="document", quote=text[:400], entities=[EntityRef(project, "project")] + find_entities(decision, self._known_names()),
             confidence=0.9, verification="user_stated", method=f"client:{client}", origin="client", ts=time.time()))  # fmt: skip
         self.store.audit(client, "record_decision", out.memory_id)
         self.store.conn.commit()

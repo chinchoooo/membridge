@@ -115,8 +115,10 @@ def find_entities(sentence: str, known: set[str] | None = None) -> list[EntityRe
     for m in _CAP_RUN.finditer(sentence):
         run = m.group(0).rstrip(".")
         words = run.split()
+        n_before = len(words)
         while words and canonical(words[0]) in _STOP_CAPS:
             words.pop(0)
+        stripped_lead = len(words) < n_before  # "The Atlas ...": Atlas is not sentence-initial
         while words and canonical(words[-1]) in _STOP_CAPS:
             words.pop()
         if not words:
@@ -124,7 +126,7 @@ def find_entities(sentence: str, known: set[str] | None = None) -> list[EntityRe
         run = " ".join(words)
         c = canonical(run)
         mid_capital = any(ch.isupper() for ch in run[1:])
-        sentence_initial = m.start() == 0 and len(words) == 1
+        sentence_initial = m.start() == 0 and len(words) == 1 and not stripped_lead
         if len(c) < 2 or len(c) > 40:
             continue
         if sentence_initial and not mid_capital and c not in known:
