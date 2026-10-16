@@ -32,6 +32,7 @@ class ExtractionStats:
     confirmed: int = 0
     skipped_deleted: int = 0
     secrets_dropped: int = 0
+    entities_merged: int = 0
     by_category: dict[str, int] = field(default_factory=dict)
 
 
@@ -39,7 +40,7 @@ def _known_entities(store: Store) -> set[str]:
     return {
         r[0]
         for r in store.conn.execute(
-            "SELECT canonical FROM entities WHERE type='project'"
+            "SELECT canonical FROM live_entities WHERE type='project'"
         )
     }
 
@@ -103,6 +104,9 @@ def run_extraction(
             )
         store.conn.commit()
     refresh_entity_links(store)
+    from ..resolve.entities import resolve_entities
+
+    st.entities_merged = len(resolve_entities(store).auto_merged)
     refresh_summaries(store)
     store.audit(
         "extractor",

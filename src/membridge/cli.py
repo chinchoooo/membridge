@@ -238,3 +238,28 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
         typer.secho("Refusing to bind a non-loopback address.", fg=typer.colors.RED, err=True)
         raise typer.Exit(2)
     uvicorn.run("membridge.api.app:create_app", factory=True, host=host, port=port, log_level="info")
+
+
+@app.command()
+def resolve(dry_run: bool = False) -> None:
+    """Merge alias entities (Postgres/PostgreSQL/pg). Reversible; uncertain pairs go to the review queue."""
+    from .resolve.entities import resolve_entities
+
+    store = Store(Settings().db_path)
+    rep = resolve_entities(store, dry_run=dry_run)
+    typer.echo(json.dumps(rep.__dict__, indent=2, default=str))
+    store.close()
+
+
+@app.command("entity-review")
+def entity_review() -> None:
+    """List pending entity pairs (uncertain matches) and recent merges."""
+    store = Store(Settings().db_path)
+    rows = store.conn.execute(
+        "SELECT a.name AS a, b.name AS b, c.score, c.a_id, c.b_id FROM entity_link_candidates c "
+        "JOIN entities a ON a.id=c.a_id JOIN entities b ON b.id=c.b_id WHERE c.status='pending' ORDER BY c.score DESC"
+    ).fetchall()
+    typer.echo(json.dumps({"pending": [dict(r) for r in rows],
+                           "merges": [dict(r) for r in store.conn.execute(
+                               "SELECT id, absorbed_id, into_id, score, method, decided_by FROM entity_merges WHERE reversed_at IS NULL ORDER BY id DESC LIMIT 20")]}, indent=2))  # fmt: skip
+    store.close()

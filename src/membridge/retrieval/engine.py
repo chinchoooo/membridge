@@ -77,7 +77,7 @@ class Retriever:
         """entity_id -> (name, strength). Phrase match against the entity table, graph FT as backup."""
         qc = " " + canonical(query) + " "
         hits: dict[str, tuple[str, float]] = {}
-        for e in self.store.conn.execute("SELECT id, name, canonical FROM entities").fetchall():
+        for e in self.store.conn.execute("SELECT id, name, canonical FROM live_entities").fetchall():
             if f" {e['canonical']} " in qc:
                 hits[e["id"]] = (e["name"], 1.0)
         if use_graph and self.graph is not None and (fq := fulltext_query(" ".join(_terms(query)))):

@@ -153,7 +153,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with store.lock:
             rows = store.conn.execute(
                 "SELECT e.id, e.name, e.type, (SELECT COUNT(*) FROM memory_entities me WHERE me.entity_id=e.id) AS memories "
-                "FROM entities e WHERE e.name LIKE ? ORDER BY memories DESC LIMIT ?", (f"%{q}%", max(1, min(limit, 100)))).fetchall()  # fmt: skip
+                "FROM live_entities e WHERE e.name LIKE ? ORDER BY memories DESC LIMIT ?", (f"%{q}%", max(1, min(limit, 100)))).fetchall()  # fmt: skip
         return {"items": [dict(r) for r in rows]}
 
     @app.get("/api/projects")

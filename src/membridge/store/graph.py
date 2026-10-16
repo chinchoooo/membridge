@@ -105,7 +105,7 @@ class GraphStore:
 
         run(
             "UNWIND $rows AS r MERGE (e:Entity {id:r.id}) SET e.name=r.name, e.type=r.type, e.canonical=r.canonical",
-            rows("SELECT id, name, type, canonical FROM entities"), "entities",
+            rows("SELECT id, name, type, canonical FROM live_entities"), "entities",
         )  # fmt: skip
         gone = [r["id"] for r in rows("SELECT id FROM memories WHERE status='deleted'")]
         if gone:
@@ -176,7 +176,7 @@ class GraphStore:
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MATCH (u:User {id:'user'}), (e:Entity {id:r.e}) MERGE (u)-[x:WORKED_ON]->(e)",
-            rows("SELECT DISTINCT e.id AS e FROM entities e WHERE e.type='project'"), "edges",
+            rows("SELECT DISTINCT e.id AS e FROM live_entities e WHERE e.type='project'"), "edges",
         )  # fmt: skip
         return n
 

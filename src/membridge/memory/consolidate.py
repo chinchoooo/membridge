@@ -137,20 +137,36 @@ def revision(store: Store, mem_id: str, actor: str, reason: str) -> None:
 
 
 def upsert_entity(store: Store, ref: EntityRef) -> str | None:
+    """Return the live entity id for `ref`, creating it if new. Aliases and merge pointers are honoured, so
+    'Postgres' resolves to the merged 'PostgreSQL' entity instead of resurrecting a duplicate."""
     canon = canonical(ref.name)
     if len(canon) < 2:
         return None
+    c = store.conn
+    hit = c.execute(
+        "SELECT a.entity_id, e.type FROM entity_aliases a JOIN live_entities e ON e.id=a.entity_id WHERE a.alias_norm=? LIMIT 1", (canon,)
+    ).fetchone()
+    if hit is not None:
+        if hit["type"] == "concept" and ref.type != "concept":
+            c.execute("UPDATE entities SET type=? WHERE id=?", (ref.type, hit["entity_id"]))
+        return str(hit["entity_id"])
     eid = entity_id(canon)
-    row = store.conn.execute("SELECT type FROM entities WHERE id=?", (eid,)).fetchone()
+    row = c.execute("SELECT type, merged_into FROM entities WHERE id=?", (eid,)).fetchone()
     if row is None:
-        store.conn.execute(
-            "INSERT INTO entities(id, canonical, name, type, created_at) VALUES (?,?,?,?,?)",
-            (eid, canon, ref.name, ref.type, time.time()),
+        c.execute(
+            "INSERT INTO entities(id, canonical, name, type, created_at) VALUES (?,?,?,?,?)", (eid, canon, ref.name, ref.type, time.time())
         )
-    elif row["type"] == "concept" and ref.type != "concept":
-        store.conn.execute(
-            "UPDATE entities SET type=? WHERE id=?", (ref.type, eid)
-        )  # upgrade
+        c.execute(
+            "INSERT OR IGNORE INTO entity_aliases(entity_id, alias_norm, alias, source, first_seen) VALUES (?,?,?,'extracted',?)",
+            (eid, canon, ref.name, time.time()),
+        )
+        return eid
+    if row["merged_into"] is not None:
+        from ..resolve.entities import root_entity
+
+        return root_entity(store, eid)
+    if row["type"] == "concept" and ref.type != "concept":
+        c.execute("UPDATE entities SET type=? WHERE id=?", (ref.type, eid))
     return eid
 
 
@@ -193,6 +209,13 @@ def _find_existing(store: Store, c: Candidate, dk: str) -> sqlite3.Row | None:
 
 def upsert(store: Store, c: Candidate) -> Outcome:
     now = time.time()
+    if c.subject and c.subject != "user":
+        hit = store.conn.execute(
+            "SELECT e.id, e.canonical FROM entity_aliases a JOIN live_entities e ON e.id=a.entity_id WHERE a.alias_norm=? LIMIT 1",
+            (c.subject,),
+        ).fetchone()
+        if hit is not None:
+            c.subject = hit["canonical"]
     dk = sha(c.category, normalize_statement(c.statement))
     existing = _find_existing(store, c, dk)
     if existing is not None:
@@ -346,20 +369,21 @@ def _resolve_conflicts(store: Store, new_id: str, c: Candidate) -> None:
 
 
 def refresh_entity_links(store: Store) -> int:
-    """Link entities to every conversation whose messages mention them (cross-conversation glue)."""
+    """Link entities to every conversation whose messages mention them or any alias of them."""
     n = 0
     store.conn.execute("DELETE FROM entity_mentions")
-    for e in store.conn.execute("SELECT id, canonical FROM entities").fetchall():
-        words = re.sub(r"[^a-z0-9 ]", " ", e["canonical"]).split()
-        if not words:
+    for e in store.conn.execute("SELECT id, canonical FROM live_entities").fetchall():
+        names = {e["canonical"]} | {r[0] for r in store.conn.execute("SELECT alias_norm FROM entity_aliases WHERE entity_id=?", (e["id"],))}
+        phrases = ['"' + " ".join(re.sub(r"[^a-z0-9 ]", " ", nm).split()) + '"' for nm in sorted(names)]
+        phrases = [p for p in phrases if p != '""']
+        if not phrases:
             continue
-        query = '"' + " ".join(words) + '"'
         try:
             rows = store.conn.execute(
                 "SELECT m.conversation_id AS cid, COUNT(*) AS n FROM messages_fts f "
                 "JOIN messages m ON m.id=f.message_id WHERE messages_fts MATCH ? GROUP BY m.conversation_id "
                 "ORDER BY n DESC LIMIT 25",
-                (query,),
+                (" OR ".join(phrases),),
             ).fetchall()
         except sqlite3.OperationalError:
             continue

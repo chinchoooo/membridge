@@ -252,7 +252,7 @@ def summary_fidelity(summary: str, sources: list[str]) -> float:
 
 def summarize_projects_llm(store: Store, llm: LLM, min_fidelity: float = 0.8) -> dict[str, int]:
     out = {"written": 0, "rejected_fidelity": 0, "errors": 0, "unchanged": 0}
-    for e in store.conn.execute("SELECT id, name FROM entities WHERE type='project'").fetchall():
+    for e in store.conn.execute("SELECT id, name FROM live_entities WHERE type='project'").fetchall():
         mems = store.conn.execute(
             "SELECT DISTINCT m.id, m.statement, m.status, m.updated_at FROM memories m JOIN memory_entities me ON me.memory_id=m.id "
             "WHERE me.entity_id=? AND m.status!='deleted' AND m.sensitivity='normal' ORDER BY m.score DESC LIMIT 25",

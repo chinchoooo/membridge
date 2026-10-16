@@ -120,9 +120,18 @@ def _m2_bitemporal_and_graph_tables(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m3_entity_merge_pointer(conn: sqlite3.Connection) -> None:
+    """Merged-away entities keep their row (so merges are reversible) but leave every listing."""
+    _add_columns(conn, "entities", {"merged_into": "TEXT"})
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_merged ON entities(merged_into)")
+    conn.execute("DROP VIEW IF EXISTS live_entities")
+    conn.execute("CREATE VIEW live_entities AS SELECT * FROM entities WHERE merged_into IS NULL")
+
+
 MIGRATIONS: list[tuple[int, str, Migration]] = [
     (1, "baseline (v1 schema from sqlite.py/memory_schema.py)", lambda c: None),
     (2, "bitemporal facts, triples, aliases, merges, relations, communities, embeddings", _m2_bitemporal_and_graph_tables),
+    (3, "entity merge pointer + live_entities view", _m3_entity_merge_pointer),
 ]
 LATEST = MIGRATIONS[-1][0]
 

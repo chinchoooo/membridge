@@ -186,13 +186,15 @@ class MemoryService:
             "SELECT e.id, e.name, (SELECT COUNT(*) FROM memory_entities me JOIN memories m ON m.id=me.memory_id "
             "WHERE me.entity_id=e.id AND m.status='current') AS current_memories, "
             "(SELECT COUNT(*) FROM entity_mentions x WHERE x.entity_id=e.id) AS conversations "
-            "FROM entities e WHERE e.type='project' ORDER BY current_memories DESC").fetchall()  # fmt: skip
+            "FROM live_entities e WHERE e.type='project' ORDER BY current_memories DESC").fetchall()  # fmt: skip
         return {"projects": [dict(r) for r in rows]}
 
     def get_project_context(self, project: str) -> dict[str, Any]:
         _check_text("project", project, 120)
         c = self.store.conn
-        e = c.execute("SELECT id, name FROM entities WHERE canonical=?", (canonical(project),)).fetchone()
+        e = c.execute("SELECT e.id, e.name FROM live_entities e JOIN entity_aliases a ON a.entity_id=e.id WHERE a.alias_norm=? LIMIT 1", (canonical(project),)).fetchone()
+        if e is None:
+            e = c.execute("SELECT id, name FROM live_entities WHERE canonical=?", (canonical(project),)).fetchone()
         if e is None:
             return {"project": project, "found": False, "note": "No project with that name is stored."}
         mems = c.execute(
@@ -220,7 +222,7 @@ class MemoryService:
                  "memories_current": one("SELECT COUNT(*) FROM memories WHERE status='current'"),
                  "memories_superseded": one("SELECT COUNT(*) FROM memories WHERE status='superseded'"),
                  "memories_unresolved": one("SELECT COUNT(*) FROM memories WHERE status='unresolved'"),
-                 "entities": one("SELECT COUNT(*) FROM entities"),
+                 "entities": one("SELECT COUNT(*) FROM live_entities"),
                  "summaries": one("SELECT COUNT(*) FROM summaries"),
                  "by_verification": {r[0]: r[1] for r in c.execute("SELECT verification, COUNT(*) FROM memories WHERE status!='deleted' GROUP BY 1")},
                  "by_category": {r[0]: r[1] for r in c.execute("SELECT category, COUNT(*) FROM memories WHERE status!='deleted' GROUP BY 1")}}  # fmt: skip
