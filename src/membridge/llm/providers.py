@@ -106,7 +106,7 @@ class ClaudeCLILLM:
         cmd = ["claude", "-p", "--model", self.model, "--output-format", "json", "--json-schema", json.dumps(schema), "--disallowedTools", _NO_TOOLS]
         try:
             with tempfile.TemporaryDirectory() as empty:
-                r = subprocess.run(cmd, input=f"{system}\n\n{user}", capture_output=True, text=True, timeout=self.timeout, cwd=empty)
+                r = subprocess.run(cmd, input=f"{system}\n\n{user}", capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=self.timeout, cwd=empty)
         except FileNotFoundError as e:
             raise LLMError("the `claude` CLI was not found on PATH") from e
         except subprocess.TimeoutExpired as e:
