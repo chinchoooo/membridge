@@ -109,6 +109,7 @@ class Store:
         self.lock = threading.RLock()  # callers (MemoryService) serialise access to the shared connection
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")  # safe in WAL mode; avoids an fsync per commit
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA + MEMORY_SCHEMA)
         migrate(self.conn)

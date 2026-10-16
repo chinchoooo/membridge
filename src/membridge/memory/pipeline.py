@@ -56,7 +56,7 @@ def run_extraction(
         "SELECT id FROM conversations ORDER BY IFNULL(create_time,0), id"
         + (f" LIMIT {int(limit_conversations)}" if limit_conversations else "")
     ).fetchall()
-    for conv in convs:
+    for n_conv, conv in enumerate(convs):
         context_entity: str | None = None
         rows = store.conn.execute(
             "SELECT m.id, m.text, m.create_time FROM messages m WHERE m.conversation_id=? AND m.role='user' "
@@ -103,7 +103,9 @@ def run_extraction(
                 "INSERT OR IGNORE INTO extraction_state(message_id, extractor, processed_at) VALUES (?,?,?)",
                 (r["id"], EXTRACTOR_VERSION, time.time()),
             )
-        store.conn.commit()
+        if n_conv % 25 == 24:  # batch commits: one fsync per 25 conversations (state rows share the transaction, so resume stays exact)
+            store.conn.commit()
+    store.conn.commit()
     refresh_entity_links(store)
     from ..resolve.entities import resolve_entities
 
