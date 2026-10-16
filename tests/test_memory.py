@@ -111,3 +111,13 @@ def test_secrets_are_never_stored(store: Store) -> None:
         known=set(),
     )
     assert cands == [] and dropped == 1
+
+
+def test_same_sentence_in_another_category_is_one_memory(store: Store) -> None:
+    from membridge.memory.consolidate import upsert
+    from membridge.memory.models import Candidate
+
+    a = upsert(store, Candidate(statement="The Atlas deadline is 5 January.", category="constraint", ref="m1", ts=1.0))
+    b = upsert(store, Candidate(statement="The Atlas deadline is 5 January.", category="decision", ref="m2", ts=2.0))
+    assert a.memory_id == b.memory_id and b.action == "confirmed"
+    assert store.conn.execute("SELECT COUNT(*) FROM memory_evidence WHERE memory_id=?", (a.memory_id,)).fetchone()[0] == 2

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 from ..store.sqlite import Store
 from .models import (
+    CATEGORIES,
     Candidate,
     EntityRef,
     canonical,
@@ -131,6 +132,14 @@ def _find_existing(store: Store, c: Candidate, dk: str) -> sqlite3.Row | None:
     row: sqlite3.Row | None = store.conn.execute(
         "SELECT * FROM memories WHERE dedup_key=?", (dk,)
     ).fetchone()
+    if row is not None:
+        return row
+    # Identical wording filed under another category (e.g. rule says "constraint", model says "decision")
+    # is still the same memory.
+    norm = normalize_statement(c.statement)
+    other_keys = [sha(cat, norm) for cat in sorted(CATEGORIES) if cat != c.category]
+    marks = ",".join("?" * len(other_keys))
+    row = store.conn.execute(f"SELECT * FROM memories WHERE dedup_key IN ({marks}) LIMIT 1", other_keys).fetchone()
     if row is not None:
         return row
     # Near-duplicate: same category/predicate/object-identity and very similar wording.
