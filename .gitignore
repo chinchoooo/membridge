@@ -17,6 +17,7 @@
 __pycache__/
 claude-export/
 dist/
+eval/gold_real.json
 eval/results/
 manifest-*.json
 node_modules/

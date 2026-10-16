@@ -311,3 +311,28 @@ def ppr_cache_cmd() -> None:
     store = Store(Settings().db_path)
     typer.echo(json.dumps(build_ppr_cache(store)))
     store.close()
+
+
+@app.command("gold-init")
+def gold_init_cmd(n: int = 25) -> None:
+    """Draft ~N questions with candidate answers into eval/gold_real.json for YOU to judge (never committed)."""
+    from .eval_real import gold_init
+    from .retrieval.engine import Retriever
+
+    settings = Settings()
+    store = Store(settings.db_path)
+    out = Path("eval/gold_real.json")
+    typer.echo(json.dumps(gold_init(store, Retriever(store), out, n)))
+    typer.echo(f"Open {out}, set relevant=true on the correct pool items, then run: membridge eval-real")
+    store.close()
+
+
+@app.command("eval-real")
+def eval_real_cmd(gold: Path = Path("eval/gold_real.json")) -> None:
+    """Score retrieval against YOUR judgments (refuses to report until enough questions are judged)."""
+    from .eval_real import eval_real
+    from .retrieval.engine import Retriever
+
+    store = Store(Settings().db_path)
+    typer.echo(json.dumps(eval_real(Retriever(store), gold), indent=2))
+    store.close()
