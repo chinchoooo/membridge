@@ -25,6 +25,7 @@ from typing import Any
 
 from ..graphalgo.adjacency import Graph, load_from_sqlite
 from ..graphalgo.ppr import PPRResult, personalized_pagerank
+from ..graphalgo.ppr_cache import cached_ppr
 from ..memory.models import canonical
 from ..store.graph import GraphStore, fulltext_query
 from ..store.sqlite import Store
@@ -46,6 +47,7 @@ class RetrievalConfig:
     # ablation switches (all on = full system)
     use_entities: bool = True  # entity linking, entity channel, hop channel
     use_ppr: bool = True
+    use_ppr_cache: bool = True  # sum precomputed per-entity PPR vectors instead of pushing at query time
     fusion: str = "rrf"  # rrf | sum
     use_mmr: bool = True
     use_knapsack: bool = True
@@ -240,6 +242,11 @@ class Retriever:
 
     # ---- channel: PPR ----------------------------------------------------------
     def _ppr(self, seeds: dict[str, float], depth: int, use_graph: bool) -> tuple[PPRResult, Graph, int]:
+        if self.cfg.use_ppr_cache:
+            ix = self._ix()
+            res = cached_ppr(self.store, seeds, ix.fact_entities, ix.degree, self.cfg.ppr_alpha)
+            if res is not None:
+                return res, Graph(), 0
         hops = max(1, min(depth, 3))
         g: Graph | None = None
         if use_graph and self.graph is not None:
@@ -537,6 +544,7 @@ class Retriever:
                 "candidates": len(rows),
                 "channels": {ch: len(ids) for ch, ids in rankings.items()},
                 "ppr_pushes": ppr_res.pushes if ppr_res else 0,
+                "ppr_source": ppr_res.source if ppr_res else None,
                 "graph_nodes_loaded": graph_nodes,
                 "fusion": cfg.fusion,
                 "temporal_intent": intent,

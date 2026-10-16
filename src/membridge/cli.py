@@ -298,3 +298,13 @@ def embed_cmd(rebuild: bool = False, to_graph: bool = False) -> None:
         out["mirrored_to_graph"] = g.sync_embeddings(store, emb.name, emb.dim)
     typer.echo(json.dumps({"model": emb.name, "dim": emb.dim, **out}))
     store.close()
+
+
+@app.command("ppr-cache")
+def ppr_cache_cmd() -> None:
+    """(Re)build the precomputed PageRank vectors that make searches ~free (done automatically by `extract`)."""
+    from .graphalgo.ppr_cache import build_ppr_cache
+
+    store = Store(Settings().db_path)
+    typer.echo(json.dumps(build_ppr_cache(store)))
+    store.close()

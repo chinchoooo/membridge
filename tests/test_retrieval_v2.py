@@ -78,7 +78,7 @@ def test_results_are_unique_sorted_and_explained(sample: Store) -> None:
     scores = [m["score"] for m in pkg["memories"]]
     assert scores == sorted(scores, reverse=True)
     assert all(m["why_selected"] and m["evidence"] for m in pkg["memories"])
-    assert pkg["stats"]["channels"] and pkg["stats"]["graph_nodes_loaded"] > 0 and pkg["stats"]["ppr_pushes"] > 0
+    assert pkg["stats"]["channels"] and pkg["stats"]["ppr_source"] in ("cache", "live")
 
 
 def test_token_budget_is_never_exceeded(sample: Store) -> None:

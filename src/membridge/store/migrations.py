@@ -167,7 +167,7 @@ def _m6_generation(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS ppr_cache (
-          entity_id TEXT NOT NULL, node_id TEXT NOT NULL, p REAL NOT NULL,
+          entity_id TEXT NOT NULL, node_id TEXT NOT NULL, p REAL NOT NULL, parent_id TEXT, etype TEXT,
           PRIMARY KEY (entity_id, node_id)
         );
         CREATE TABLE IF NOT EXISTS ppr_cache_state (id INTEGER PRIMARY KEY CHECK (id = 1), gen INTEGER NOT NULL, built_at REAL NOT NULL, entities INTEGER NOT NULL);

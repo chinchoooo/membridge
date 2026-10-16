@@ -34,6 +34,7 @@ class ExtractionStats:
     skipped_deleted: int = 0
     secrets_dropped: int = 0
     entities_merged: int = 0
+    ppr_cache: dict[str, Any] | None = None
     by_category: dict[str, int] = field(default_factory=dict)
 
 
@@ -121,6 +122,9 @@ def run_extraction(
     build_communities(store)
     refresh_summaries(store)
     refresh_community_summaries(store)
+    from ..graphalgo.ppr_cache import build_ppr_cache
+
+    st.ppr_cache = build_ppr_cache(store)
     if embedder is not None:
         from ..embed.index import index_embeddings
 

@@ -75,11 +75,32 @@ class MemoryService:
                 setattr(self, name, _locked(store.lock, fn))
 
     # ---- graph sync (best effort; SQLite stays authoritative) ---------------------------
+    def _schedule_ppr(self) -> None:
+        """After a write the PPR cache is stale (queries fall back to live push, still correct). Rebuild it in the
+        background once writes go quiet for a second."""
+        import threading
+
+        t = getattr(self, "_ppr_timer", None)
+        if t is not None:
+            t.cancel()
+        self._ppr_timer = threading.Timer(1.0, self._rebuild_ppr)
+        self._ppr_timer.daemon = True
+        self._ppr_timer.start()
+
+    def _rebuild_ppr(self) -> None:
+        from ..graphalgo.ppr_cache import build_ppr_cache
+
+        try:
+            build_ppr_cache(self.store)
+        except Exception:  # store closed or busy: the next write reschedules
+            pass
+
     def _sync_graph(self, only: set[str] | None = None) -> bool:
         """Best effort; SQLite stays authoritative. `only` = memory ids that changed (incremental sync)."""
         from ..resolve.relations import rebuild_entity_edges
 
         rebuild_entity_edges(self.store)
+        self._schedule_ppr()
         if self.graph is not None and self.graph.available():
             try:
                 self.graph.sync(self.store, only=only)

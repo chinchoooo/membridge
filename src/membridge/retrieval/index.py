@@ -27,6 +27,8 @@ class WarmIndex:
     phrases: dict[str, list[tuple[str, str, float]]] = field(default_factory=dict)  # phrase -> [(entity_id, name, strength)]
     max_words: int = 1
     ent_name: dict[str, str] = field(default_factory=dict)
+    fact_entities: dict[str, list[str]] = field(default_factory=dict)
+    degree: dict[str, int] = field(default_factory=dict)
     entity_facts: dict[str, list[str]] = field(default_factory=dict)  # sorted: current first, score desc
     conv_projects: dict[str, list[str]] = field(default_factory=dict)
     conv_title: dict[str, str] = field(default_factory=dict)
@@ -59,12 +61,28 @@ def build_index(store: Store) -> WarmIndex:
         if r["alias"] and all(x[0] != r["id"] for x in ix.phrases.get(r["alias"], ())):
             ix.phrases.setdefault(r["alias"], []).append((r["id"], names[r["id"]], 0.95))
     ix.ent_name = names
+    # curated aliases ("pg", "k8s", "vscode") also work as *query* words for whichever entity they stand for
+    from ..resolve.blocking import compact
+    from ..resolve.score import ALIAS_DICT
+
+    by_compact: dict[str, tuple[str, str]] = {}
+    for phrase, entries in list(ix.phrases.items()):
+        for eid, name, _ in entries:
+            by_compact.setdefault(compact(phrase), (eid, name))
+    for alias, target in ALIAS_DICT.items():
+        hit = by_compact.get(compact(target))
+        a = canon(alias)
+        if hit and a and all(x[0] != hit[0] for x in ix.phrases.get(a, ())):
+            ix.phrases.setdefault(a, []).append((hit[0], hit[1], 0.9))
     ix.max_words = min(6, max((len(p.split()) for p in ix.phrases), default=1))
     per: dict[str, set[str]] = {}
     for r in c.execute("SELECT entity_id, memory_id FROM memory_entities"):
         if r["memory_id"] in ix.facts and r["entity_id"] in names:
             per.setdefault(r["entity_id"], set()).add(r["memory_id"])
     for eid, ids in per.items():
+        ix.degree[eid] = len(ids)
+        for m in ids:
+            ix.fact_entities.setdefault(m, []).append(eid)
         ix.entity_facts[eid] = sorted(ids, key=lambda m: (ix.facts[m]["status"] != "current", -float(ix.facts[m]["score"]), m))
     for r in c.execute("SELECT x.conversation_id AS cid, x.entity_id AS eid FROM entity_mentions x JOIN live_entities e ON e.id=x.entity_id WHERE e.type='project'"):
         ix.conv_projects.setdefault(r["cid"], []).append(r["eid"])

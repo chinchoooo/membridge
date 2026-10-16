@@ -24,6 +24,7 @@ class PPRResult:
     r: dict[str, float]
     parent: dict[str, tuple[str, str]] = field(default_factory=dict)  # node -> (source node, edge type) of its biggest inflow
     pushes: int = 0
+    source: str = "live"  # live forward-push | cache (summed precomputed vectors)
 
     def mass(self) -> float:
         return sum(self.p.values()) + sum(self.r.values())
