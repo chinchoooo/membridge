@@ -132,4 +132,5 @@ def test_reads_are_audited_with_the_client_identity(export_file: Path, store: St
     run_import(store, export_file)
     run_extraction(store)
     MemoryService(store, actor="claude-code").get_project_context("Atlas")
+    store.flush_audit()  # read audits are buffered off the hot path
     assert store.conn.execute("SELECT COUNT(*) FROM audit_log WHERE actor='claude-code' AND action='get_project_context'").fetchone()[0] == 1
