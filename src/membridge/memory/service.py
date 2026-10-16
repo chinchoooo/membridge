@@ -61,15 +61,17 @@ def _locked(lock: Any, fn: Any) -> Any:
 
 class MemoryService:
     def __init__(
-        self, store: Store, graph: GraphStore | None = None, cfg: RetrievalConfig | None = None, actor: str = "agent"
+        self, store: Store, graph: GraphStore | None = None, cfg: RetrievalConfig | None = None, actor: str = "agent", embedder: Any = None
     ) -> None:
-        self.store, self.graph, self.actor = store, graph, actor
-        self.retriever = Retriever(store, graph, cfg)
+        self.store, self.graph, self.actor, self.embedder = store, graph, actor, embedder
+        if embedder is not None and cfg is None:
+            cfg = RetrievalConfig(use_vector=True)
+        self.retriever = Retriever(store, graph, cfg, embedder)
         self.retriever.actor = actor
         # MCP/HTTP servers call us from worker threads: serialise every public operation on one connection.
         for name in dir(self):
             fn = getattr(self, name)
-            if not name.startswith('_') and callable(fn) and name not in ('retriever', 'actor'):
+            if not name.startswith('_') and callable(fn) and name not in ('retriever', 'actor', 'embedder'):
                 setattr(self, name, _locked(store.lock, fn))
 
     # ---- graph sync (best effort; SQLite stays authoritative) ---------------------------

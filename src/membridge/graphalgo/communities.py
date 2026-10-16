@@ -60,8 +60,8 @@ def build_entity_graph(store: Store) -> nx.Graph[Any]:
 
 def _leiden(g: nx.Graph[Any], seed: int) -> list[list[set[str]]] | None:
     try:
-        import igraph as ig  # type: ignore[import-not-found]
-        import leidenalg  # type: ignore[import-not-found]
+        import igraph as ig  # type: ignore[import-untyped, unused-ignore]
+        import leidenalg  # type: ignore[import-untyped, unused-ignore]
     except ImportError:
         return None
     nodes = sorted(g.nodes)

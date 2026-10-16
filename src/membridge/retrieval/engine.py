@@ -52,6 +52,9 @@ class RetrievalConfig:
     rrf_k: int = 60
     mmr_lambda: float = 0.7
     min_top_score: float = 0.30
+    use_vector: bool = False  # needs an embedder + an index (membridge embed)
+    vector_min_sim: float = 0.45
+    vector_backend: str = "sqlite"  # sqlite (default, deterministic) | graph (FalkorDB vector index)
 
 
 def estimate_tokens(text: str) -> int:
@@ -114,8 +117,8 @@ def _match_expr(terms: list[str]) -> str:
 
 
 class Retriever:
-    def __init__(self, store: Store, graph: GraphStore | None = None, cfg: RetrievalConfig | None = None) -> None:
-        self.store, self.graph, self.cfg = store, graph, cfg or RetrievalConfig()
+    def __init__(self, store: Store, graph: GraphStore | None = None, cfg: RetrievalConfig | None = None, embedder: Any = None) -> None:
+        self.store, self.graph, self.cfg, self.embedder = store, graph, cfg or RetrievalConfig(), embedder
         self.actor = "retriever"
 
     # ---- environment ----------------------------------------------------
@@ -165,6 +168,21 @@ class Retriever:
             return []
         worst = max((abs(r["s"]) for r in rows), default=1.0) or 1.0
         return [(r["memory_id"], abs(r["s"]) / worst) for r in rows]
+
+    def _vector(self, query: str, use_graph: bool) -> list[tuple[str, float]]:
+        """Semantic channel. SQLite brute force by default (identical results with or without Docker); optionally
+        FalkorDB's HNSW vector index. Returns (fact_id, cosine) above the similarity floor."""
+        if self.embedder is None:
+            return []
+        if self.cfg.vector_backend == "graph" and use_graph and self.graph is not None:
+            try:
+                hits = self.graph.vector_query(self.embedder.embed_query(query), 20)
+                return [(i, s) for i, s in hits if s >= self.cfg.vector_min_sim]
+            except Exception:  # index not built yet: fall back to the canonical SQLite vectors
+                pass
+        from ..embed.index import vector_search
+
+        return vector_search(self.store, self.embedder, query, k=20, kind="fact", min_sim=self.cfg.vector_min_sim)
 
     def _message_hits(self, query: str, limit: int = 5) -> list[sqlite3.Row]:
         terms = _terms(query)
@@ -295,6 +313,7 @@ class Retriever:
         ents = self._entity_hits(query, use_graph) if cfg.use_entities else {}
         fact_hits = self._fact_bm25(query, use_graph)
         rel = dict(fact_hits)
+        vec_hits = self._vector(query, use_graph) if cfg.use_vector else []
         msg_hits = self._message_hits(query)
         msg_facts: list[str] = []
         for mh in msg_hits:
@@ -304,6 +323,8 @@ class Retriever:
         rankings: dict[str, list[str]] = {}
         if fact_hits:
             rankings["bm25_fact"] = [m for m, _ in fact_hits]
+        if vec_hits:
+            rankings["vector"] = [m for m, _ in vec_hits]
         if msg_facts:
             rankings["bm25_msg"] = list(dict.fromkeys(msg_facts))
         if ents:
@@ -318,6 +339,8 @@ class Retriever:
                 seeds[e] = max(seeds.get(e, 0.0), w)
             for mid, score in fact_hits[:5]:
                 seeds[mid] = max(seeds.get(mid, 0.0), 0.5 * score)
+            for mid, sim in vec_hits[:3]:
+                seeds[mid] = max(seeds.get(mid, 0.0), 0.5 * sim)
             if seeds:
                 ppr_res, _g, graph_nodes = self._ppr(seeds, depth if depth is not None else cfg.max_depth, use_graph)
                 ranked = sorted(((n, v) for n, v in ppr_res.p.items() if n.startswith("mem_")), key=lambda kv: -kv[1])
@@ -329,6 +352,8 @@ class Retriever:
             for ch, ids in rankings.items():
                 if ch == "bm25_fact":
                     chan_scores[ch] = rel
+                elif ch == "vector":
+                    chan_scores[ch] = dict(vec_hits)
                 elif ch == "ppr" and ppr_res:
                     chan_scores[ch] = {n: ppr_res.p[n] for n in ids}
                 else:
@@ -463,7 +488,7 @@ class Retriever:
         top = out_items[0] if out_items else None
         # calibrated: enough score AND corroboration (several channels, an exact text match, or a named entity)
         sufficient = top is not None and top["score"] >= cfg.min_top_score and (
-            len(top["channels"]) >= 2 or "bm25_fact" in top["channels"] or bool(ents)
+            len(top["channels"]) >= 2 or "bm25_fact" in top["channels"] or "vector" in top["channels"] or bool(ents)
         )
         sufficient = sufficient or bool(community_summaries)
         pkg = {

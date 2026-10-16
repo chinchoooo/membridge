@@ -276,3 +276,20 @@ def communities() -> None:
     typer.echo(json.dumps({"method": rep.method, "levels": rep.levels, "new": len(rep.new_ids), "kept": len(rep.kept_ids),
                            "removed": len(rep.removed_ids), "summaries": refresh_community_summaries(store)}, indent=2))  # fmt: skip
     store.close()
+
+
+@app.command("embed")
+def embed_cmd(rebuild: bool = False, to_graph: bool = False) -> None:
+    """Build the optional semantic index (MEMBRIDGE_EMBEDDER=fastembed). --rebuild recomputes from canonical text."""
+    from .embed.embedder import build_embedder
+    from .embed.index import index_embeddings, rebuild_embeddings
+
+    settings = Settings()
+    emb = build_embedder(settings.embedder if settings.embedder != "none" else "fastembed")
+    assert emb is not None
+    store = Store(settings.db_path)
+    out = rebuild_embeddings(store, emb) if rebuild else index_embeddings(store, emb)
+    if to_graph and (g := _graph(settings)).available():
+        out["mirrored_to_graph"] = g.sync_embeddings(store, emb.name, emb.dim)
+    typer.echo(json.dumps({"model": emb.name, "dim": emb.dim, **out}))
+    store.close()

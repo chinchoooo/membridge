@@ -183,7 +183,9 @@ def build_server(service: MemoryService, export_dir: Any, client: str = "mcp") -
 def open_service(settings: Settings | None = None, actor: str = "mcp") -> tuple[MemoryService, Settings]:
     s = settings or Settings()
     graph = GraphStore(s.falkor_host, s.falkor_port, s.falkor_graph)
-    return MemoryService(Store(s.db_path), graph, actor=actor), s
+    from .embed.embedder import build_embedder
+
+    return MemoryService(Store(s.db_path), graph, actor=actor, embedder=build_embedder(s.embedder)), s
 
 
 def main(argv: list[str] | None = None) -> None:

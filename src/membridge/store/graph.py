@@ -232,6 +232,31 @@ class GraphStore:
         )  # fmt: skip
         return n
 
+    def sync_embeddings(self, store: Store, model: str, dim: int) -> int:
+        """Mirror canonical SQLite fact vectors into a FalkorDB HNSW vector index (derived, rebuildable)."""
+        from ..embed.index import unpack_vec
+
+        try:
+            self.query(f"CREATE VECTOR INDEX FOR (m:Memory) ON (m.embedding) OPTIONS {{dimension: {int(dim)}, similarityFunction: 'cosine'}}")
+        except Exception as e:
+            if "already" not in str(e).lower() and "exist" not in str(e).lower():
+                raise
+        rows = [
+            {"id": r["record_id"], "v": unpack_vec(r["vector"])}
+            for r in store.conn.execute("SELECT record_id, vector FROM embeddings WHERE kind='fact' AND model=?", (model,))
+        ]
+        for chunk in _batches(rows):
+            self.query("UNWIND $rows AS r MATCH (m:Memory {id:r.id}) SET m.embedding = vecf32(r.v)", {"rows": chunk})
+        return len(rows)
+
+    def vector_query(self, vec: list[float], k: int = 20) -> list[tuple[str, float]]:
+        """(fact id, cosine similarity). FalkorDB reports cosine *distance*, converted here."""
+        rows = self.query(
+            "CALL db.idx.vector.queryNodes('Memory', 'embedding', $k, vecf32($v)) YIELD node, score RETURN node.id, score",
+            {"k": int(k), "v": vec},
+        )
+        return [(r[0], 1.0 - float(r[1])) for r in rows]
+
     def compute_global_metrics(self) -> dict[str, Any]:
         """Run FalkorDB's built-in global algorithms and store results on Entity nodes (prior / diagnostics)."""
         out: dict[str, Any] = {}

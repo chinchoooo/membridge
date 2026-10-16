@@ -8,6 +8,7 @@ import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..store.sqlite import Store
 from .consolidate import refresh_entity_links, upsert, upsert_entity
@@ -46,7 +47,7 @@ def _known_entities(store: Store) -> set[str]:
 
 
 def run_extraction(
-    store: Store, *, limit_conversations: int | None = None
+    store: Store, *, limit_conversations: int | None = None, embedder: Any = None
 ) -> ExtractionStats:
     """Process user messages not yet seen by this extractor version (safe to re-run)."""
     st = ExtractionStats()
@@ -106,7 +107,7 @@ def run_extraction(
     refresh_entity_links(store)
     from ..resolve.entities import resolve_entities
 
-    st.entities_merged = len(resolve_entities(store).auto_merged)
+    st.entities_merged = len(resolve_entities(store, embedder=embedder).auto_merged)
     from ..resolve.relations import rebuild_entity_edges
 
     rebuild_entity_edges(store)
@@ -116,6 +117,10 @@ def run_extraction(
     build_communities(store)
     refresh_summaries(store)
     refresh_community_summaries(store)
+    if embedder is not None:
+        from ..embed.index import index_embeddings
+
+        index_embeddings(store, embedder)
     store.audit(
         "extractor",
         "extract",

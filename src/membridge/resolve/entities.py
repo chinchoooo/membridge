@@ -85,7 +85,7 @@ def _alias_targets() -> dict[str, str]:
 
 def resolve_entities(
     store: Store, *, dry_run: bool = False, tau_hi: float = TAU_HI, tau_lo: float = TAU_LO, max_cluster: int = 8,
-    decided_by: str = "auto",
+    decided_by: str = "auto", embedder: Any = None,
 ) -> ResolutionReport:  # fmt: skip
     rep = ResolutionReport(dry_run=dry_run)
     c = store.conn
@@ -98,6 +98,13 @@ def resolve_entities(
     decided = {(r["a_id"], r["b_id"]): r for r in c.execute("SELECT * FROM entity_link_candidates WHERE status IN ('accepted','rejected')")}
 
     pairs = candidate_pairs({i: e["canonical"] for i, e in ents.items()}, _alias_targets())
+    emb_sim: dict[tuple[str, str], float] = {}
+    if embedder is not None:  # semantic blocking: close name embeddings become *candidates*, never automatic merges
+        from ..embed.index import index_embeddings, similar_entities
+
+        index_embeddings(store, embedder, ("entity",))
+        emb_sim = similar_entities(store, embedder)
+        pairs |= {p for p in emb_sim if p[0] in ents and p[1] in ents}
     rep.candidate_pairs = len(pairs)
     rep.reduction_ratio = round(reduction_ratio(len(ents), len(pairs)), 4)
 
@@ -113,7 +120,7 @@ def resolve_entities(
             uf.forbid(a, b)
             rep.blocked_cannot_link += 1
             continue
-        f = features(ea["canonical"], eb["canonical"], ctx.get(a, set()), ctx.get(b, set()))
+        f = features(ea["canonical"], eb["canonical"], ctx.get(a, set()), ctx.get(b, set()), emb_sim.get((a, b)))
         sc, method = score(f)
         scored[(a, b)] = (sc, method, f)
         if sc < tau_lo:

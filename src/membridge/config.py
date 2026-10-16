@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     llm_model: str = "phi3"
     llm_base_url: str = "http://127.0.0.1:11434"  # ollama; for openai_compat e.g. https://api.openai.com/v1
     llm_api_key_env: str = "MEMBRIDGE_LLM_API_KEY"  # NAME of the env var holding the key; never the key itself
+    embedder: str = "none"  # none | fastembed (extra `embeddings`) | hashing (lexical fallback, not semantic)
     allow_hosted: bool = False  # explicit opt-in to send (redacted) text to a hosted provider
     redact_hosted: bool = True
 
