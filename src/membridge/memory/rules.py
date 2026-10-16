@@ -77,6 +77,20 @@ _SKILL = re.compile(
     r"\s+(?:for|to|at)\b",
 )  # fmt: skip
 _CORRECTION = re.compile(r"^\s*(?:actually|correction|sorry|i meant|no,? wait|to correct)\b[:,]?\s", re.I)
+_USING = re.compile(
+    r"\bi(?:'m| am)\s+(?:currently\s+|now\s+|also\s+)?(?P<verb>using|learning|studying)\s+"
+    r"(?P<obj>[A-Za-z][\w.+#-]*(?:\s[A-Za-z][\w.+#-]*){0,3})",
+    re.I,
+)
+_MY_IS = re.compile(
+    r"\bmy\s+(?P<what>tech stack|stack|degree|major|university|college|company|employer|team|thesis|favou?rite\s+\w+|editor|ide|os)\s+"
+    r"(?:is|are)\s+(?P<obj>[^.;:!?]+)",
+    re.I,
+)
+_PLACE = re.compile(r"(?i:\bi\s+(?P<verb>work|study|live|am based|'m based)\s+(?:at|in|for)\s+)(?P<obj>[A-Z][\w.&'-]*(?:\s[A-Z][\w.&'-]*){0,3})")
+_NAME = re.compile(r"(?i:\bmy name is\s+)(?P<obj>[A-Z][a-z]+(?:\s[A-Z][a-z.]+){0,2})")
+_MY_CATEGORY = {"degree": "education", "major": "education", "university": "education", "college": "education",
+                "company": "profile", "employer": "profile", "team": "profile", "thesis": "project"}  # fmt: skip
 _POSITIVE = {"prefer", "like", "love", "enjoy"}
 
 
@@ -90,7 +104,7 @@ def aspect_of(phrase: str | None, subject: str | None) -> str:
 
 
 def clean_object(text: str, max_words: int = 6) -> str | None:
-    t = _ARTICLE.sub("", text.strip().strip("\"'`()[]"))
+    t = _ARTICLE.sub("", text.strip().strip("\"'`()[]")).rstrip(".,;:!?")
     t = re.sub(
         r"\s+(?:because|since|but|and then|which|that)\b.*$", "", t, flags=re.IGNORECASE
     ).strip()
@@ -241,6 +255,29 @@ def extract_from_message(
                         confidence=0.8,
                     )
                 )
+        if not sent.rstrip().endswith("?"):  # statements only: a question about React is not a fact about the user
+            if m := _USING.search(sent):
+                raw = re.split(r"\s+(?:for|to|in|on|at|with|because|and|but|so|which|that)\b", m["obj"].strip())[0]
+                obj = None if re.match(r"^(a|an|the|my|our|this|that|it|to|some|any)\b", raw, re.I) else clean_object(raw, 4)
+                if obj and canonical(obj) not in _STOP_CAPS:
+                    cat = "interest" if m["verb"].lower() in ("learning", "studying") else "skill"
+                    out.append(mk(cat, subject="user", predicate="uses_tool" if cat == "skill" else "studies", object=obj,
+                                  entities=ents + [_entity(obj)], confidence=0.7))  # fmt: skip
+            if m := _MY_IS.search(sent):
+                obj = clean_object(m["obj"], 8)
+                what = m["what"].lower()
+                if obj:
+                    cat = _MY_CATEGORY.get(what, "preference" if what.startswith("favo") else "skill")
+                    out.append(mk(cat, subject="user", predicate=f"{what.replace(' ', '_')}_is", object=obj,
+                                  entities=ents + [_entity(obj)], confidence=0.8))  # fmt: skip
+            if m := _PLACE.search(sent):
+                obj = clean_object(m["obj"], 4)
+                if obj:
+                    cat = "education" if m["verb"].lower() == "study" else "profile"
+                    out.append(mk(cat, subject="user", predicate=f"{m['verb'].lower().replace(' ', '_')}_at", object=obj,
+                                  entities=ents + [_entity(obj, "organisation")], confidence=0.8))  # fmt: skip
+            if m := _NAME.search(sent):
+                out.append(mk("profile", subject="user", predicate="name_is", object=m["obj"].strip().rstrip("."), entities=[], confidence=0.9))
         if m := _SKILL.search(sent):
             obj = clean_object(m["obj"], 3)
             if obj:
