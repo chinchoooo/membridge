@@ -189,36 +189,108 @@ def ask(query: str, budget: int = 1500, graph: bool = True) -> None:
     store.close()
 
 
+def _secure(path: str, encrypt: bool, passphrase_env: str | None) -> str:
+    """Encrypt `path` in place (plaintext removed after the encrypted copy is written) when requested."""
+    from .crypto import CryptoError, encrypt_file, get_passphrase
+
+    if not encrypt:
+        return path
+    try:
+        enc = encrypt_file(Path(path), Path(path + ".enc"), get_passphrase(passphrase_env, confirm=passphrase_env is None))
+    except CryptoError as e:
+        typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2) from e
+    Path(path).unlink()
+    return str(enc)
+
+
 @app.command()
-def backup(dest: Annotated[Path | None, typer.Option(help="Backup folder")] = None) -> None:
+def backup(
+    dest: Annotated[Path | None, typer.Option(help="Backup folder")] = None,
+    encrypt: Annotated[bool, typer.Option(help="AES-256-GCM encrypt with a passphrase")] = False,
+    passphrase_env: Annotated[str | None, typer.Option(help="NAME of an env var holding the passphrase (default: prompt)")] = None,
+) -> None:
     """Consistent copy of the database (the graph is rebuildable)."""
     from .ops import backup as do_backup
 
     settings = Settings()
     store = Store(settings.db_path)
-    typer.echo(json.dumps(do_backup(store, dest or settings.data_dir / "backups")))
+    out = do_backup(store, dest or settings.data_dir / "backups")
+    out["path"] = _secure(out["path"], encrypt, passphrase_env)
+    out["encrypted"] = encrypt
+    typer.echo(json.dumps(out))
     store.close()
 
 
 @app.command()
-def restore(backup_file: Path) -> None:
-    """Restore a backup. The current database is moved aside, never overwritten."""
+def restore(
+    backup_file: Path,
+    passphrase_env: Annotated[str | None, typer.Option(help="NAME of an env var holding the passphrase (default: prompt)")] = None,
+) -> None:
+    """Restore a backup (.db or encrypted .enc). The current database is moved aside, never overwritten."""
+    import tempfile
+
+    from .crypto import CryptoError, decrypt_file, get_passphrase
     from .ops import restore as do_restore
 
     settings = Settings()
+    if backup_file.suffix == ".enc":
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                plain = decrypt_file(backup_file, Path(td) / "restored.db", get_passphrase(passphrase_env))
+            except CryptoError as e:
+                typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(2) from e
+            typer.echo(json.dumps(do_restore(settings.db_path, plain, _graph(settings)), indent=2))
+        return
     typer.echo(json.dumps(do_restore(settings.db_path, backup_file, _graph(settings)), indent=2))
 
 
 @app.command()
-def export(fmt: Annotated[str, typer.Option("--format")] = "json", raw: bool = False,
-           sensitive: bool = False) -> None:  # fmt: skip
+def export(
+    fmt: Annotated[str, typer.Option("--format")] = "json",
+    raw: bool = False,
+    sensitive: bool = False,
+    encrypt: Annotated[bool, typer.Option(help="AES-256-GCM encrypt with a passphrase")] = False,
+    passphrase_env: Annotated[str | None, typer.Option(help="NAME of an env var holding the passphrase (default: prompt)")] = None,
+) -> None:
     """Export memories (and optionally the raw archive) to the exports folder."""
     from .ops import export_memory
 
     settings = Settings()
     store = Store(settings.db_path)
-    typer.echo(json.dumps(export_memory(store, settings.data_dir / "exports", fmt, include_raw=raw, include_sensitive=sensitive)))
+    out = export_memory(store, settings.data_dir / "exports", fmt, include_raw=raw, include_sensitive=sensitive)
+    out["path"] = _secure(out["path"], encrypt, passphrase_env)
+    out["encrypted"] = encrypt
+    typer.echo(json.dumps(out))
     store.close()
+
+
+@app.command()
+def lock(passphrase_env: Annotated[str | None, typer.Option(help="NAME of an env var holding the passphrase")] = None) -> None:
+    """Encrypt the database at rest (membridge.db -> membridge.db.enc) and remove the plaintext. Unlock before use."""
+    from .crypto import CryptoError, get_passphrase, lock_database
+
+    s = Settings()
+    try:
+        enc = lock_database(s.db_path, get_passphrase(passphrase_env, confirm=passphrase_env is None))
+    except (CryptoError, FileNotFoundError) as e:
+        typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2) from e
+    typer.echo(f"locked: {enc}  (stop the dashboard/MCP server first; run `membridge unlock` before using MemBridge again)")
+
+
+@app.command()
+def unlock(passphrase_env: Annotated[str | None, typer.Option(help="NAME of an env var holding the passphrase")] = None) -> None:
+    """Decrypt the vault back to membridge.db."""
+    from .crypto import CryptoError, get_passphrase, unlock_database
+
+    try:
+        unlock_database(Settings().db_path, get_passphrase(passphrase_env))
+    except (CryptoError, FileNotFoundError) as e:
+        typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2) from e
+    typer.echo("unlocked")
 
 
 @app.command()
