@@ -6,6 +6,7 @@ idempotently, and destructive operations need a confirmation token issued by a p
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import re
@@ -72,10 +73,14 @@ class MemoryService:
                 setattr(self, name, _locked(store.lock, fn))
 
     # ---- graph sync (best effort; SQLite stays authoritative) ---------------------------
-    def _sync_graph(self) -> bool:
+    def _sync_graph(self, only: set[str] | None = None) -> bool:
+        """Best effort; SQLite stays authoritative. `only` = memory ids that changed (incremental sync)."""
+        from ..resolve.relations import rebuild_entity_edges
+
+        rebuild_entity_edges(self.store)
         if self.graph is not None and self.graph.available():
             try:
-                self.graph.sync(self.store)
+                self.graph.sync(self.store, only=only)
                 return True
             except Exception:
                 return False
@@ -253,7 +258,7 @@ class MemoryService:
             sensitivity=sensitivity_of(content), origin="client", ts=time.time()))  # fmt: skip
         self.store.audit(client, "save_memory", out.memory_id, result=out.action)
         self.store.conn.commit()
-        self._sync_graph()
+        self._sync_graph({out.memory_id})
         return {"memory_id": out.memory_id, "result": out.action, "idempotent": out.action == "confirmed"}
 
     def _client_doc(self, client: str, text: str) -> str:
@@ -285,9 +290,9 @@ class MemoryService:
         self.store.audit(client, "record_decision", out.memory_id)
         self.store.conn.commit()
         refresh_summaries(self.store)
-        self._sync_graph()
-        row = self.store.conn.execute("SELECT status FROM memories WHERE id=?", (out.memory_id,)).fetchone()
         sup = [r[0] for r in self.store.conn.execute("SELECT dst_id FROM memory_links WHERE src_id=? AND rel='SUPERSEDES'", (out.memory_id,))]
+        self._sync_graph({out.memory_id, *sup})
+        row = self.store.conn.execute("SELECT status FROM memories WHERE id=?", (out.memory_id,)).fetchone()
         return {"memory_id": out.memory_id, "result": out.action, "status": row["status"], "supersedes": sup}
 
     def commit_session_summary(self, summary: str, decisions: list[dict[str, str]] | None = None,
@@ -340,7 +345,7 @@ class MemoryService:
         rescore(self.store, memory_id)
         self.store.audit(actor, "update_memory", memory_id, fields=sorted(changes), reason=reason)
         self.store.conn.commit()
-        self._sync_graph()
+        self._sync_graph({memory_id})
         return {"memory_id": memory_id, "updated": sorted(changes)}
 
     def link_memories(self, source_id: str, relationship: str, target_id: str, reason: str = "", actor: str = "agent") -> dict[str, Any]:
@@ -356,7 +361,7 @@ class MemoryService:
             (source_id, relationship, target_id, reason[:300], time.time()))  # fmt: skip
         self.store.audit(actor, "link_memories", source_id, rel=relationship, to=target_id)
         self.store.conn.commit()
-        self._sync_graph()
+        self._sync_graph({source_id, target_id})
         return {"linked": [source_id, relationship, target_id]}
 
     # ---- destructive: two-step ---------------------------------------------------------
@@ -388,7 +393,7 @@ class MemoryService:
         c.execute("UPDATE memory_revisions SET old_json='{}' WHERE memory_id=?", (memory_id,))
         self.store.audit(actor, "forget_memory", memory_id)
         c.commit()
-        self._sync_graph()
+        self._sync_graph({memory_id})
         return {"forgotten": memory_id}
 
     def run_consolidation(self, scope: str = "incremental") -> dict[str, Any]:
@@ -417,3 +422,47 @@ class MemoryService:
             "JOIN memories a ON a.id=l.src_id JOIN memories b ON b.id=l.dst_id WHERE l.rel='CONTRADICTS' "
             "AND (a.status='unresolved' OR b.status='unresolved')").fetchall()  # fmt: skip
         return {"contradictions": [dict(r) for r in rows]}
+
+    # ---- entity resolution (review loop) -------------------------------------------------------------
+    def resolve_entities(self, dry_run: bool = False) -> dict[str, Any]:
+        from ..resolve.entities import resolve_entities
+
+        rep = resolve_entities(self.store, dry_run=dry_run, decided_by=self.actor)
+        if not dry_run and rep.auto_merged:
+            self._graph_full()
+        return {k: v for k, v in rep.__dict__.items()}
+
+    def entity_review(self) -> dict[str, Any]:
+        c = self.store.conn
+        pending = [dict(r) for r in c.execute(
+            "SELECT a.name AS a_name, b.name AS b_name, c.score, c.a_id, c.b_id FROM entity_link_candidates c "
+            "JOIN live_entities a ON a.id=c.a_id JOIN live_entities b ON b.id=c.b_id WHERE c.status='pending' ORDER BY c.score DESC")]  # fmt: skip
+        merges = [dict(r) for r in c.execute(
+            "SELECT m.id, a.name AS absorbed, i.name AS into_name, m.score, m.method, m.decided_by FROM entity_merges m "
+            "JOIN entities a ON a.id=m.absorbed_id JOIN entities i ON i.id=m.into_id WHERE m.reversed_at IS NULL ORDER BY m.id DESC LIMIT 50")]  # fmt: skip
+        return {"pending": pending, "merges": merges}
+
+    def decide_entity_pair(self, a_id: str, b_id: str, accept: bool) -> dict[str, Any]:
+        from ..resolve.entities import decide_pair
+
+        out = decide_pair(self.store, a_id, b_id, accept, decided_by=self.actor)
+        self._graph_full()
+        return out
+
+    def split_entity_merge(self, merge_id: int) -> dict[str, Any]:
+        from ..resolve.entities import split_merge
+
+        try:
+            out = split_merge(self.store, merge_id, decided_by=self.actor)
+        except ValueError as e:
+            raise ServiceError(str(e)) from e
+        self._graph_full()
+        return out
+
+    def _graph_full(self) -> None:
+        from ..resolve.relations import rebuild_entity_edges
+
+        rebuild_entity_edges(self.store)
+        if self.graph is not None and self.graph.available():
+            with contextlib.suppress(Exception):
+                self.graph.rebuild(self.store)

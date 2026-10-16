@@ -107,6 +107,9 @@ def run_extraction(
     from ..resolve.entities import resolve_entities
 
     st.entities_merged = len(resolve_entities(store).auto_merged)
+    from ..resolve.relations import rebuild_entity_edges
+
+    rebuild_entity_edges(store)
     refresh_summaries(store)
     store.audit(
         "extractor",
