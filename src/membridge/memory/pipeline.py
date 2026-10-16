@@ -150,10 +150,43 @@ def _doc(
     return did
 
 
-def seed_from_claude_export(store: Store, zips: list[Path]) -> dict[str, int]:
+_PREFIX_TAG = re.compile(r"^\[(?P<tag>[A-Za-z]{3,12})\]\s*")
+_SOURCE_TAG = re.compile(r"\s*\[s:(?P<src>[0-9a-f]{6,})\]\s*$")
+
+
+def clean_claude_bullet(text: str) -> tuple[str, str | None, str | None]:
+    """'[stated] Prefers C++ [s:d015e9]' -> ('Prefers C++', 'stated', 'd015e9'). The markup is Claude's own bookkeeping:
+    the tag says how Claude came to know it, the id points at the conversation it came from."""
+    tag = src = None
+    if m := _PREFIX_TAG.match(text):
+        tag, text = m["tag"].lower(), text[m.end():]
+    if m := _SOURCE_TAG.search(text):
+        src, text = m["src"], text[: m.start()]
+    return text.strip(), tag, src
+
+
+def purge_claude_seeds(store: Store) -> int:
+    """Hard-delete memories derived purely from Claude's memory/project files so they can be re-derived cleanly."""
+    c = store.conn
+    ids = [r[0] for r in c.execute("SELECT id FROM memories WHERE origin IN ('claude_memory','claude_project')")]
+    for mid in ids:
+        for sql in (
+            "DELETE FROM memory_evidence WHERE memory_id=?", "DELETE FROM memories_fts WHERE memory_id=?",
+            "DELETE FROM memory_entities WHERE memory_id=?", "DELETE FROM memory_links WHERE src_id=? OR dst_id=?",
+            "DELETE FROM entity_edges WHERE fact_id=?", "DELETE FROM embeddings WHERE record_id=?",
+            "DELETE FROM memory_revisions WHERE memory_id=?", "DELETE FROM memories WHERE id=?",
+        ):  # fmt: skip
+            c.execute(sql, (mid, mid) if sql.count("?") == 2 else (mid,))
+    c.commit()
+    return len(ids)
+
+
+def seed_from_claude_export(store: Store, zips: list[Path], *, replace: bool = False) -> dict[str, int]:
     """memories-*.zip bullets -> provider_stated memories; projects-*.zip -> project entities."""
     job = "seed_" + sha(*[str(z) for z in zips])[:10]
     counts = {"memory_files": 0, "memories": 0, "projects": 0}
+    if replace:
+        counts["purged"] = purge_claude_seeds(store)
     for z in zips:
         with zipfile.ZipFile(z) as zf:
             for name in zf.namelist():
@@ -175,11 +208,14 @@ def seed_from_claude_export(store: Store, zips: list[Path]) -> dict[str, int]:
                         m = _BULLET.match(line)
                         if not m or contains_secret(m.group(1)):
                             continue
-                        stmt = m.group(1)
+                        original = m.group(1)
+                        stmt, tag, _src = clean_claude_bullet(original)
+                        if not stmt:
+                            continue
                         c = Candidate(
                             statement=stmt, category="health" if sensitivity_of(stmt) == "sensitive" and category == "fact" else category,
-                            kind="semantic", ref=did, ref_kind="document", quote=stmt,
-                            entities=find_entities(stmt), confidence=0.8, verification="provider_stated",
+                            kind="semantic", ref=did, ref_kind="document", quote=original,
+                            entities=find_entities(stmt), confidence=0.8, verification="model_inferred" if tag == "inferred" else "provider_stated",
                             method="claude_memory_import", sensitivity=sensitivity_of(stmt), origin="claude_memory",
                         )  # fmt: skip
                         upsert(store, c)

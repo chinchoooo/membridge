@@ -25,8 +25,8 @@ from .consolidate import _link, _supersede, rescore, revision, upsert
 from .models import CATEGORIES, Candidate, EntityRef, canonical, contains_secret, sensitivity_of, sha
 
 EXTRACTOR_PREFIX = "llm-1"
-WINDOW_CHARS = 2800
-MSG_PROMPT_CHARS = 1500
+WINDOW_CHARS = 1600  # prompt budget per call; smaller windows keep CPU-only models responsive
+MSG_PROMPT_CHARS = 900
 
 SYSTEM_EXTRACT = (
     "You extract durable personal memories about the USER from their own messages in past AI conversations. "
@@ -87,13 +87,13 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
-def _windows(rows: list[Any]) -> list[list[Any]]:
+def _windows(rows: list[Any], window_chars: int = WINDOW_CHARS, msg_chars: int = MSG_PROMPT_CHARS) -> list[list[Any]]:
     out: list[list[Any]] = []
     cur: list[Any] = []
     size = 0
     for r in rows:
-        n = min(len(r["text"]), MSG_PROMPT_CHARS)
-        if cur and size + n > WINDOW_CHARS:
+        n = min(len(r["text"]), msg_chars)
+        if cur and size + n > window_chars:
             out.append(cur)
             cur, size = [], 0
         cur.append(r)
@@ -104,7 +104,8 @@ def _windows(rows: list[Any]) -> list[list[Any]]:
 
 
 def extract_with_llm(
-    store: Store, llm: LLM, *, max_windows: int | None = None, progress: Callable[[LLMExtractStats], None] | None = None
+    store: Store, llm: LLM, *, max_windows: int | None = None, progress: Callable[[LLMExtractStats], None] | None = None,
+    window_chars: int = WINDOW_CHARS, msg_chars: int = MSG_PROMPT_CHARS,
 ) -> LLMExtractStats:
     """Resumable: processed messages are recorded per model, so re-running continues where it stopped."""
     st = LLMExtractStats()
@@ -116,12 +117,12 @@ def extract_with_llm(
             "(SELECT message_id FROM extraction_state WHERE extractor=?) ORDER BY m.seq",
             (conv["id"], extractor),
         ).fetchall()
-        for win in _windows(rows):
+        for win in _windows(rows, window_chars, msg_chars):
             if max_windows is not None and st.windows >= max_windows:
                 return st
             st.windows += 1
             st.messages += len(win)
-            prompt = "\n".join(f"[m{i}] {r['text'][:MSG_PROMPT_CHARS]}" for i, r in enumerate(win, 1))
+            prompt = "\n".join(f"[m{i}] {r['text'][:msg_chars]}" for i, r in enumerate(win, 1))
             try:
                 raw = llm.complete_json(SYSTEM_EXTRACT, f"<untrusted_messages>\n{prompt}\n</untrusted_messages>", EXTRACT_SCHEMA, max_tokens=900)
                 out = _Out.model_validate(raw)

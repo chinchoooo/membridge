@@ -121,3 +121,25 @@ def test_same_sentence_in_another_category_is_one_memory(store: Store) -> None:
     b = upsert(store, Candidate(statement="The Atlas deadline is 5 January.", category="decision", ref="m2", ts=2.0))
     assert a.memory_id == b.memory_id and b.action == "confirmed"
     assert store.conn.execute("SELECT COUNT(*) FROM memory_evidence WHERE memory_id=?", (a.memory_id,)).fetchone()[0] == 2
+
+
+def test_claude_memory_markup_is_stripped_but_provenance_kept(store: Store, tmp_path: Path) -> None:
+    import json
+    import zipfile
+
+    from membridge.memory.pipeline import clean_claude_bullet, seed_from_claude_export
+
+    assert clean_claude_bullet("[stated] Prefers C++ over Rust [s:d015e9da777d3ac8]") == ("Prefers C++ over Rust", "stated", "d015e9da777d3ac8")
+    assert clean_claude_bullet("Plain bullet") == ("Plain bullet", None, None)
+    z = tmp_path / "memories-000.zip"
+    body = {"memory_files": [{"path": "/topics/tech-stack.md", "content": "- [stated] Uses Python for data work [s:abcdef123456]\n- [inferred] Likes terse answers [s:abcdef123456]\n", "updated_at": "2026-01-01"}]}
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("memories/x.json", json.dumps(body))
+    seed_from_claude_export(store, [z])
+    rows = {r["statement"]: r for r in store.conn.execute("SELECT * FROM memories")}
+    assert set(rows) == {"Uses Python for data work", "Likes terse answers"}
+    assert rows["Uses Python for data work"]["verification"] == "provider_stated" and rows["Likes terse answers"]["verification"] == "model_inferred"
+    quote = store.conn.execute("SELECT quote FROM memory_evidence WHERE memory_id=?", (rows["Uses Python for data work"]["id"],)).fetchone()[0]
+    assert quote.startswith("[stated]") and "[s:abcdef123456]" in quote  # the original line stays as evidence
+    again = seed_from_claude_export(store, [z], replace=True)
+    assert again["purged"] == 2 and store.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 2

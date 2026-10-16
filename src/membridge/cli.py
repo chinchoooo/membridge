@@ -82,12 +82,13 @@ def _graph(settings: Settings):  # type: ignore[no-untyped-def]
 @app.command()
 def seed(
     zips: Annotated[list[Path], typer.Argument(help="Claude export memories-*.zip / projects-*.zip")],
+    replace: Annotated[bool, typer.Option(help="Re-derive: delete earlier Claude-seeded memories first")] = False,
 ) -> None:
     """Seed memories and project entities from a Claude export's memory/project files."""
     from .memory.pipeline import seed_from_claude_export
 
     store = Store(Settings().db_path)
-    typer.echo(json.dumps(seed_from_claude_export(store, zips)))
+    typer.echo(json.dumps(seed_from_claude_export(store, zips, replace=replace)))
     store.close()
 
 
@@ -131,14 +132,18 @@ def _llm_or_exit(settings: Settings):  # type: ignore[no-untyped-def]
 
 
 @app.command("extract-llm")
-def extract_llm(max_windows: Annotated[int | None, typer.Option(help="Stop after N prompt windows (resumable)")] = None) -> None:
+def extract_llm(
+    max_windows: Annotated[int | None, typer.Option(help="Stop after N prompt windows (resumable)")] = None,
+    window_chars: Annotated[int, typer.Option(help="Characters of conversation per LLM call")] = 1600,
+    msg_chars: Annotated[int, typer.Option(help="Max characters taken from one message")] = 900,
+) -> None:
     """LLM extraction of memories (local by default; hosted needs MEMBRIDGE_ALLOW_HOSTED=true)."""
     from .memory.llm_tasks import extract_with_llm
 
     settings = Settings()
     llm = _llm_or_exit(settings)
     store = Store(settings.db_path)
-    st = extract_with_llm(store, llm, max_windows=max_windows,
+    st = extract_with_llm(store, llm, max_windows=max_windows, window_chars=window_chars, msg_chars=msg_chars,
                           progress=lambda s: typer.echo(f"windows={s.windows} created={s.created} errors={s.errors}", err=True))  # fmt: skip
     typer.echo(json.dumps({**st.__dict__, "provider": llm.name, "remote": llm.is_remote,
                            "chars_sent_remote": getattr(llm, "sent_chars", 0), "redactions": getattr(llm, "redactions", {})}, indent=2))  # fmt: skip
