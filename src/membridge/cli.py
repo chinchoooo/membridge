@@ -263,3 +263,16 @@ def entity_review() -> None:
                            "merges": [dict(r) for r in store.conn.execute(
                                "SELECT id, absorbed_id, into_id, score, method, decided_by FROM entity_merges WHERE reversed_at IS NULL ORDER BY id DESC LIMIT 20")]}, indent=2))  # fmt: skip
     store.close()
+
+
+@app.command()
+def communities() -> None:
+    """Detect entity communities and (re)build the hierarchical summaries."""
+    from .graphalgo.communities import build_communities
+    from .memory.community_summaries import refresh_community_summaries
+
+    store = Store(Settings().db_path)
+    rep = build_communities(store)
+    typer.echo(json.dumps({"method": rep.method, "levels": rep.levels, "new": len(rep.new_ids), "kept": len(rep.kept_ids),
+                           "removed": len(rep.removed_ids), "summaries": refresh_community_summaries(store)}, indent=2))  # fmt: skip
+    store.close()

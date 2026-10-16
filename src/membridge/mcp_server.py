@@ -113,6 +113,11 @@ def build_server(service: MemoryService, export_dir: Any, client: str = "mcp") -
         return service.get_project_context(project)
 
     @mcp.tool(annotations=READ)
+    def get_overview(query: str | None = None, token_budget: int = 1200) -> dict[str, Any]:
+        """Big-picture answer: hierarchical summaries of the user's areas and themes (use for 'what am I working on overall?')."""
+        return service.get_overview(query, token_budget)
+
+    @mcp.tool(annotations=READ)
     def list_projects() -> dict[str, Any]:
         """Projects known to the memory."""
         return service.list_projects()

@@ -217,6 +217,17 @@ class MemoryService:
                 "history": [dict(m) for m in mems if m["status"] != "current"],
                 "conversations": [dict(v) for v in convs]}  # fmt: skip
 
+    def get_overview(self, query: str | None = None, token_budget: int = 1200) -> dict[str, Any]:
+        """Holistic view: hierarchical community summaries (areas -> themes) plus the personal context summary."""
+        c = self.store.conn
+        q = query or "overall everything I am working on across all projects"
+        pkg = self.retriever.search(q, token_budget=max(300, min(token_budget, 6000)), filters={"communities": True}, limit=5)
+        personal = c.execute("SELECT text FROM summaries WHERE id='sum_personal_me'").fetchone()
+        return {"query": q, "areas": [x for x in pkg["community_summaries"] if x["level"] == 2],
+                "themes": [x for x in pkg["community_summaries"] if x["level"] == 1],
+                "personal_context": personal["text"] if personal else None, "key_memories": pkg["memories"][:5],
+                "stats": pkg["stats"], "content_trust": pkg["content_trust"]}  # fmt: skip
+
     def get_memory_statistics(self) -> dict[str, Any]:
         c = self.store.conn
         def one(q: str) -> int:

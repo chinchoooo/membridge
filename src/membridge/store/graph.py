@@ -132,6 +132,7 @@ class GraphStore:
             for rel in ("ABOUT", "SUPPORTED_BY", "PART_OF", "DECIDED", "PREFERS", "WORKED_ON", *sorted(LINK_RELS)):
                 self.query(f"MATCH ()-[x:{rel}]->() DELETE x")
 
+        self.query("MATCH (c:Community) DETACH DELETE c")  # derived: re-projected below
         gone_entities = [r["id"] for r in rows("SELECT id FROM entities WHERE merged_into IS NOT NULL")]
         if gone_entities:
             self.query("MATCH (e:Entity) WHERE e.id IN $ids DETACH DELETE e", {"ids": gone_entities})
@@ -214,6 +215,16 @@ class GraphStore:
         run(
             "UNWIND $rows AS r MATCH (u:User {id:'user'}), (m:Memory {id:r.m}) MERGE (u)-[x:PREFERS]->(m) SET x.polarity=r.p",
             rows(f"SELECT m.id AS m, m.predicate AS p FROM memories m WHERE m.category='preference' AND m.status!='deleted'{flt}"), "edges",
+        )  # fmt: skip
+        run("UNWIND $rows AS r MERGE (c:Community {id:r.id}) SET c.level=r.level, c.method=r.method", rows("SELECT id, level, method FROM communities"))
+        run(
+            "UNWIND $rows AS r MATCH (e:Entity {id:r.e}), (c:Community {id:r.c}) MERGE (e)-[:MEMBER_OF]->(c)",
+            rows("SELECT cm.entity_id AS e, cm.community_id AS c FROM community_members cm JOIN communities c ON c.id=cm.community_id "
+                 "JOIN live_entities le ON le.id=cm.entity_id WHERE c.level=1"), "edges",
+        )  # fmt: skip
+        run(
+            "UNWIND $rows AS r MATCH (a:Community {id:r.a}), (b:Community {id:r.b}) MERGE (a)-[:CHILD_OF]->(b)",
+            rows("SELECT id AS a, parent_id AS b FROM communities WHERE parent_id IS NOT NULL"), "edges",
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MATCH (u:User {id:'user'}), (e:Entity {id:r.e}) MERGE (u)-[x:WORKED_ON]->(e)",

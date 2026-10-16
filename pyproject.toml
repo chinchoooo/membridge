@@ -21,13 +21,20 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8",
- "mypy>=1.10",
- "ruff>=0.5",
- "types-psutil>=7.2.2.20260906",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "types-psutil>=7.2.2.20260906",
+    "types-networkx>=3.6.1.20261006",
 ]
 
 [project.scripts]
 membridge = "membridge.cli:app"
+
+[project.optional-dependencies]
+leiden = [
+    "igraph>=1.0.0",
+    "leidenalg>=0.12.0",
+]
 
 [build-system]
 requires = ["hatchling"]

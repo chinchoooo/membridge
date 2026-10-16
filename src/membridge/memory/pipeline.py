@@ -110,7 +110,12 @@ def run_extraction(
     from ..resolve.relations import rebuild_entity_edges
 
     rebuild_entity_edges(store)
+    from ..graphalgo.communities import build_communities
+    from .community_summaries import refresh_community_summaries
+
+    build_communities(store)
     refresh_summaries(store)
+    refresh_community_summaries(store)
     store.audit(
         "extractor",
         "extract",
