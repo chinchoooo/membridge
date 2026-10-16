@@ -154,3 +154,18 @@ def test_pack_prefers_shortening_over_dropping_and_handles_edges() -> None:
     assert pack(groups, 200) == [0, 0]
     assert pack(groups, 0) == [None, None] and pack([], 100) == []
     assert pack([[Option(1.0, 500)]], 100) == [None]
+
+
+def test_numpy_and_pure_python_knapsack_agree_exactly() -> None:
+    from membridge.retrieval.pack import _pack_py
+
+    rnd = random.Random(11)
+    for _ in range(80):
+        groups = [[Option(rnd.random(), rnd.randint(10, 150)), Option(rnd.random() * 0.9, rnd.randint(5, 80))] for _ in range(rnd.randint(1, 9))]
+        budget = rnd.randint(0, 500)
+        must = {rnd.randrange(len(groups))} if rnd.random() < 0.3 else set()
+        a, b = pack(groups, budget, must=must), _pack_py(groups, budget, must=must)
+        va = sum(groups[i][j].value for i, j in enumerate(a) if j is not None)
+        vb = sum(groups[i][j].value for i, j in enumerate(b) if j is not None)
+        assert va == pytest.approx(vb, abs=1e-9)
+        assert sum(groups[i][j].cost for i, j in enumerate(a) if j is not None) <= budget

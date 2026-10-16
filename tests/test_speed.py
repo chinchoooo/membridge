@@ -156,3 +156,25 @@ def test_cached_answers_stay_correct_on_the_benchmark(mh: tuple[Store, list[dict
 def test_explanations_survive_the_cache(sample: Store) -> None:
     pkg = Retriever(sample).search("What is the Atlas storage decision?", limit=5)
     assert pkg["stats"]["ppr_source"] == "cache" and pkg["graph_paths"], "graph paths must be explainable from cached parents"
+
+
+def test_idf_pruning_keeps_the_rare_term_and_leaves_small_corpora_alone(sample: Store, tmp_path: Path) -> None:
+    r = Retriever(sample)
+    assert r._fts_terms("messages_fts", ["what", "atlas", "now"]) == ["what", "atlas", "now"]  # 16 messages: untouched
+    spec = importlib.util.spec_from_file_location("scale", ROOT / "eval" / "scale.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    f = tmp_path / "big" / "conversations.json"
+    f.parent.mkdir()
+    f.write_text(json.dumps(mod.build(400)), encoding="utf-8")
+    big = Store(tmp_path / "big.db")
+    run_import(big, f)
+    run_extraction(big)
+    rb = Retriever(big)
+    kept = rb._fts_terms("messages_fts", ["kamilu0", "storage", "service", "project"])
+    assert "kamilu0" in kept or len(kept) == 1
+    assert len(kept) < 4, "ubiquitous terms must be dropped"
+    assert rb._fts_terms("messages_fts", ["zzzznotaword", "qqqqnope"]) == []
+    pkg = rb.search(f"What does {mod.name(5)} use for storage now?", limit=5)
+    assert mod.name(5) in pkg["memories"][0]["statement"]

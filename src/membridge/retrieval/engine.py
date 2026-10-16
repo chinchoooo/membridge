@@ -128,16 +128,51 @@ class Retriever:
         self.store, self.graph, self.cfg, self.embedder = store, graph, cfg or RetrievalConfig(), embedder
         self.actor = "retriever"
         self._index: WarmIndex | None = None
+        self._gen_pin: int | None = None  # generation read once per search instead of ~10 times
+        self._df: dict[tuple[str, str], int] = {}
+        self._df_gen = -1
+        self._fts_n: dict[str, int] = {}
         self._cache: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
         self._graph_probe: tuple[float, bool] = (0.0, False)
         self.cache_size = 256
 
     def _ix(self) -> WarmIndex:
         """The warm index for the current content generation (rebuilt lazily after any write, by any process)."""
-        g = self.store.generation()
+        g = self._gen_pin if self._gen_pin is not None else self.store.generation()
         if self._index is None or self._index.gen != g:
             self._index = build_index(self.store)
         return self._index
+
+    def _fts_terms(self, table: str, terms: list[str]) -> list[str]:
+        """IDF pruning for OR full-text queries. Terms present in a huge share of documents ("use", "now") barely move
+        bm25 yet force it to score thousands of rows (3-13 ms); dropping them cuts the lookup ~25x. Small corpora are
+        left untouched (nothing is pruned below 200 documents), and the rarest term is always kept."""
+        gen = self._gen_pin if self._gen_pin is not None else self.store.generation()
+        if gen != self._df_gen:
+            self._df.clear()
+            self._fts_n.clear()
+            self._df_gen = gen
+        n = self._fts_n.get(table)
+        if n is None:
+            src = "messages" if table == "messages_fts" else "memories"
+            n = self._fts_n[table] = int(self.store.conn.execute(f"SELECT COUNT(*) FROM {src}").fetchone()[0])
+        if n < 200 or len(terms) < 2:
+            return terms
+        limit = max(50, n // 10)
+        dfs: dict[str, int] = {}
+        for t in terms:
+            key = (table, t)
+            if key not in self._df:
+                try:
+                    self._df[key] = int(self.store.conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?", ('"' + t.replace('"', '""') + '"',)).fetchone()[0])
+                except sqlite3.OperationalError:
+                    self._df[key] = 0
+            dfs[t] = self._df[key]
+        live = {t: d for t, d in dfs.items() if d > 0}
+        if not live:
+            return []
+        rare = [t for t in terms if t in live and live[t] <= limit]
+        return rare or [min(live, key=lambda t: live[t])]
 
     # ---- environment ----------------------------------------------------
     def _use_graph(self) -> bool:
@@ -174,7 +209,7 @@ class Retriever:
     def _fact_bm25(self, query: str, use_graph: bool) -> list[tuple[str, float]]:
         """Full-text over facts via SQLite FTS5 in every mode, so answers do not change when Docker is up or down.
         (FalkorDB's own full-text index is still used for entity linking and graph-native exploration.)"""
-        terms = _terms(query)
+        terms = self._fts_terms("memories_fts", _terms(query))
         if not terms:
             return []
         try:
@@ -202,7 +237,7 @@ class Retriever:
         return vector_search(self.store, self.embedder, query, k=20, kind="fact", min_sim=self.cfg.vector_min_sim)
 
     def _message_hits(self, query: str, limit: int = 5) -> list[sqlite3.Row]:
-        terms = _terms(query)
+        terms = self._fts_terms("messages_fts", _terms(query))
         if not terms:
             return []
         try:
@@ -324,7 +359,11 @@ class Retriever:
             out = dict(hit)
             out["stats"] = {**hit["stats"], "latency_ms": round((time.perf_counter() - t0) * 1000, 3), "cache": "hit"}
             return out
-        pkg = self._search(query, limit=limit, filters=filters, token_budget=token_budget, depth=depth)
+        self._gen_pin = key[-1]
+        try:
+            pkg = self._search(query, limit=limit, filters=filters, token_budget=token_budget, depth=depth)
+        finally:
+            self._gen_pin = None
         pkg["stats"]["cache"] = "miss"
         self._cache[key] = copy.copy(pkg)
         while len(self._cache) > self.cache_size:
