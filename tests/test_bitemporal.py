@@ -146,3 +146,13 @@ def test_old_one_off_decision_stays_retrievable(store: Store) -> None:
     mid = upsert(store, Candidate(statement="I chose Rust for the firmware.", category="decision", subject="fw", predicate="decided",
                                   object="Rust", ref="m1", ts=_ts(2015, 1, 1))).memory_id  # fmt: skip
     assert store.conn.execute("SELECT score FROM memories WHERE id=?", (mid,)).fetchone()[0] >= 0.5
+
+
+def test_rescore_all_backfills_rows_that_predate_the_migration(store: Store) -> None:
+    from membridge.memory.consolidate import rescore_all
+
+    mid = upsert(store, Candidate(statement="I decided to use Rust for firmware.", category="decision", ref="m", ts=_ts(2026, 1, 1), verification="user_stated")).memory_id
+    store.conn.execute("UPDATE memories SET importance=0, activation=0, score=0 WHERE id=?", (mid,))  # as a migrated legacy row
+    assert rescore_all(store, now=_ts(2026, 1, 2)) == 1
+    row = store.conn.execute("SELECT importance, activation, score FROM memories WHERE id=?", (mid,)).fetchone()
+    assert row["importance"] > 0.9 and 0.3 < row["activation"] < 1.0 and row["score"] >= 0.5

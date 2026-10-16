@@ -90,3 +90,34 @@ def test_export_backup_and_client_instructions(client: TestClient) -> None:
     ids = {c["id"]: c for c in cl["clients"]}
     assert "Verified" in ids["claude-code"]["status"] and "NOT verified" in ids["cursor"]["status"]
     assert "cannot capture" in cl["note"]
+
+
+def test_as_of_retrieval_via_api(client: TestClient) -> None:
+    now = client.post("/api/retrieve", json={"query": "What storage does Atlas use?", "limit": 5}, headers=H).json()
+    old = client.post("/api/retrieve", json={"query": "Atlas storage database", "as_of": "2023-11-20"}, headers=H).json()
+    assert "SQLite" in now["memories"][0]["statement"]
+    assert any("PostgreSQL" in m["statement"] for m in old["memories"][:2]) and not any("switched" in m["statement"] for m in old["memories"])
+    bad = client.post("/api/retrieve", json={"query": "x", "as_of": "not-a-date"}, headers=H)
+    assert bad.status_code == 400
+
+
+def test_global_overview_endpoint(client: TestClient) -> None:
+    d = client.get("/api/overview/global").json()
+    assert "areas" in d and "themes" in d and d["content_trust"]
+
+
+def test_entity_review_loop_via_api(client: TestClient) -> None:
+    r = client.post("/api/resolve", json={"dry_run": True}, headers=H).json()
+    assert r["dry_run"] is True and "auto_merged" in r
+    assert set(client.get("/api/entity-review").json()) == {"pending", "merges"}
+    assert client.post("/api/entity-review/split", json={"merge_id": 999}, headers=H).status_code == 400
+
+
+def test_contradiction_resolution_keeps_history(client: TestClient) -> None:
+    items = client.get("/api/memories", params={"category": "decision"}).json()["items"]
+    keep, drop = items[0]["id"], items[1]["id"]
+    out = client.post("/api/contradictions/resolve", json={"keep_id": keep, "drop_id": drop}, headers=H)
+    assert out.status_code == 200 and out.json() == {"kept": keep, "superseded": drop}
+    d = client.get(f"/api/memories/{drop}").json()["memory"]
+    assert d["status"] == "superseded" and any(link["rel"] == "SUPERSEDES" for link in d["links"])
+    assert client.post("/api/contradictions/resolve", json={"keep_id": keep, "drop_id": keep}, headers=H).status_code == 400

@@ -113,7 +113,9 @@ def run_extraction(
     rebuild_entity_edges(store)
     from ..graphalgo.communities import build_communities
     from .community_summaries import refresh_community_summaries
+    from .consolidate import rescore_all
 
+    rescore_all(store)
     build_communities(store)
     refresh_summaries(store)
     refresh_community_summaries(store)

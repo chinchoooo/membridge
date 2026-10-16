@@ -36,6 +36,31 @@ class RetrieveIn(BaseModel):
     token_budget: int = Field(1500, ge=200, le=8000)
     limit: int = Field(10, ge=1, le=50)
     use_graph: bool = True
+    use_vector: bool = False
+    as_of: str | None = None
+    known_at: str | None = None
+    category: str | None = None
+    project: str | None = None
+
+
+class PairDecision(BaseModel):
+    a_id: str
+    b_id: str
+    accept: bool
+
+
+class SplitIn(BaseModel):
+    merge_id: int
+
+
+class ResolveIn(BaseModel):
+    dry_run: bool = True
+
+
+class ContradictionIn(BaseModel):
+    keep_id: str
+    drop_id: str
+    reason: str = Field("resolved in dashboard", max_length=300)
 
 
 class MemoryIn(BaseModel):
@@ -175,12 +200,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ---- retrieval tester ----------------------------------------------------------------
     @app.post("/api/retrieve")
     def retrieve(body: RetrieveIn) -> dict[str, Any]:
-        with store.lock:
-            from ..retrieval.engine import Retriever
+        from ..embed.embedder import build_embedder
+        from ..memory.filters import build_filters
+        from ..retrieval.engine import RetrievalConfig, Retriever
 
-            r = Retriever(store, graph if body.use_graph else None)
+        filters = build_filters({k: v for k, v in (("as_of", body.as_of), ("known_at", body.known_at), ("category", body.category), ("project", body.project)) if v})
+        with store.lock:
+            emb = None
+            if body.use_vector:
+                try:
+                    emb = build_embedder(s.embedder if s.embedder != "none" else "fastembed")
+                except Exception as e:  # optional extra not installed / model unavailable
+                    raise HTTPException(400, f"semantic search unavailable: {type(e).__name__}") from e
+            r = Retriever(store, graph if body.use_graph else None, RetrievalConfig(use_vector=emb is not None), emb)
             r.actor = "dashboard"
-            return r.search(body.query, limit=body.limit, token_budget=body.token_budget)
+            return r.search(body.query, limit=body.limit, token_budget=body.token_budget, filters=filters)
+
+    @app.get("/api/overview/global")
+    def overview_global(q: str = "") -> dict[str, Any]:
+        return svc.get_overview(q or None)
+
+    @app.get("/api/entity-review")
+    def entity_review() -> dict[str, Any]:
+        return svc.entity_review()
+
+    @app.post("/api/entity-review/decide")
+    def entity_decide(body: PairDecision) -> dict[str, Any]:
+        return svc.decide_entity_pair(body.a_id, body.b_id, body.accept)
+
+    @app.post("/api/entity-review/split")
+    def entity_split(body: SplitIn) -> dict[str, Any]:
+        return svc.split_entity_merge(body.merge_id)
+
+    @app.post("/api/resolve")
+    def resolve(body: ResolveIn) -> dict[str, Any]:
+        return svc.resolve_entities(body.dry_run)
+
+    @app.post("/api/contradictions/resolve")
+    def contradiction_resolve(body: ContradictionIn) -> dict[str, Any]:
+        return svc.resolve_contradiction(body.keep_id, body.drop_id, body.reason, actor="dashboard")
 
     # ---- maintenance -----------------------------------------------------------------------
     @app.post("/api/imports")

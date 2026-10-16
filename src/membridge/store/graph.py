@@ -216,7 +216,10 @@ class GraphStore:
             "UNWIND $rows AS r MATCH (u:User {id:'user'}), (m:Memory {id:r.m}) MERGE (u)-[x:PREFERS]->(m) SET x.polarity=r.p",
             rows(f"SELECT m.id AS m, m.predicate AS p FROM memories m WHERE m.category='preference' AND m.status!='deleted'{flt}"), "edges",
         )  # fmt: skip
-        run("UNWIND $rows AS r MERGE (c:Community {id:r.id}) SET c.level=r.level, c.method=r.method", rows("SELECT id, level, method FROM communities"))
+        run(
+            "UNWIND $rows AS r MERGE (c:Community {id:r.id}) SET c.level=r.level, c.method=r.method, c.title=r.title",
+            rows("SELECT c.id, c.level, c.method, IFNULL((SELECT SUBSTR(s.text, 1, 70) FROM summaries s WHERE s.ref=c.id), c.id) AS title FROM communities c"),
+        )
         run(
             "UNWIND $rows AS r MATCH (e:Entity {id:r.e}), (c:Community {id:r.c}) MERGE (e)-[:MEMBER_OF]->(c)",
             rows("SELECT cm.entity_id AS e, cm.community_id AS c FROM community_members cm JOIN communities c ON c.id=cm.community_id "

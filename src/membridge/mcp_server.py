@@ -10,13 +10,13 @@ is written only when the client calls the persistence tools below.
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from .config import Settings
+from .memory.filters import build_filters
 from .memory.service import MemoryService, ServiceError
 from .ops import export_memory as _export
 from .store.graph import GraphStore
@@ -36,34 +36,8 @@ INSTRUCTIONS = (
 )
 
 
-def _epoch(v: Any) -> float | None:
-    if v in (None, ""):
-        return None
-    if isinstance(v, (int, float)):
-        return float(v)
-    try:
-        d = datetime.fromisoformat(str(v))
-    except ValueError as e:
-        raise ServiceError(f"invalid date '{v}': use ISO format like 2026-01-31") from e
-    return (d if d.tzinfo else d.replace(tzinfo=UTC)).timestamp()
-
-
 def _filters(filters: dict[str, Any] | None, date_range: dict[str, Any] | None = None) -> dict[str, Any]:
-    f = dict(filters or {})
-    allowed = {"category", "status", "project", "origin", "verification", "since", "until", "as_of", "known_at", "include_sensitive"}
-    bad = set(f) - allowed
-    if bad:
-        raise ServiceError(f"unknown filter(s) {sorted(bad)}; allowed: {sorted(allowed)}")
-    dr = date_range or {}
-    for key in ("since", "until"):
-        val = _epoch(dr.get(key, f.get(key)))
-        if val is not None:
-            f[key] = val
-    for key in ("as_of", "known_at"):
-        if key in f:
-            f[key] = _epoch(f[key])
-    f.pop("include_sensitive", None)  # an agent cannot opt itself into sensitive memories
-    return f
+    return build_filters(filters, date_range)
 
 
 def build_server(service: MemoryService, export_dir: Any, client: str = "mcp") -> MCPServer:

@@ -436,6 +436,27 @@ class MemoryService:
         self.store.conn.commit()
         return out
 
+    def resolve_contradiction(self, keep_id: str, drop_id: str, reason: str = "resolved by user", actor: str | None = None) -> dict[str, Any]:
+        """Settle an unresolved conflict: `keep_id` becomes current, `drop_id` is superseded (kept as history)."""
+        from .consolidate import _supersede, rescore
+
+        actor = actor or self.actor
+        c = self.store.conn
+        for mid in (keep_id, drop_id):
+            if c.execute("SELECT 1 FROM memories WHERE id=? AND status!='deleted'", (mid,)).fetchone() is None:
+                raise ServiceError(f"no memory with id {mid}")
+        if keep_id == drop_id:
+            raise ServiceError("keep and drop must be different memories")
+        revision(self.store, keep_id, actor, f"kept: {reason}")
+        c.execute("UPDATE memories SET status='current', updated_at=? WHERE id=?", (time.time(), keep_id))
+        k = c.execute("SELECT IFNULL(valid_at, valid_from) FROM memories WHERE id=?", (keep_id,)).fetchone()[0]
+        _supersede(self.store, keep_id, drop_id, f"user_resolution: {reason}", k)
+        rescore(self.store, keep_id)
+        self.store.audit(actor, "resolve_contradiction", keep_id, dropped=drop_id)
+        c.commit()
+        self._sync_graph({keep_id, drop_id})
+        return {"kept": keep_id, "superseded": drop_id}
+
     def list_unresolved(self) -> dict[str, Any]:
         rows = self.store.conn.execute(
             "SELECT l.src_id, l.dst_id, l.reason, a.statement AS a_text, b.statement AS b_text FROM memory_links l "

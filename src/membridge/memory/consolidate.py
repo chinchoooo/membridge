@@ -127,6 +127,16 @@ def rescore(store: Store, mem_id: str, now: float | None = None) -> None:
     )
 
 
+def rescore_all(store: Store, now: float | None = None) -> int:
+    """Recompute score/importance/activation for every live memory. Idempotent; fills rows that predate the
+    bi-temporal migration and keeps recency honest as time passes."""
+    ids = [r[0] for r in store.conn.execute("SELECT id FROM memories WHERE status!='deleted'")]
+    for mid in ids:
+        rescore(store, mid, now)
+    store.conn.commit()
+    return len(ids)
+
+
 def revision(store: Store, mem_id: str, actor: str, reason: str) -> None:
     row = store.conn.execute("SELECT * FROM memories WHERE id=?", (mem_id,)).fetchone()
     if row is not None:
