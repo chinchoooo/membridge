@@ -15,7 +15,7 @@ from typing import Any
 
 from ..store.sqlite import Store
 from .adjacency import Graph, edge_weight
-from .ppr import PPRResult, personalized_pagerank, specificity
+from .ppr import PPRResult, graph_context, personalized_pagerank, specificity
 
 
 def load_all(conn: sqlite3.Connection) -> Graph:
@@ -55,10 +55,11 @@ def build_ppr_cache(store: Store, *, k: int = 64, eps: float = 1e-3, alpha: floa
     finally:
         ro.close()
     rows: list[tuple[str, str, float, str | None, str | None]] = []
+    ctx = graph_context(g, hub_beta)  # once, not per entity
     for e in ents:
         if e not in g.adj:
             continue
-        res = personalized_pagerank(g, {e: 1.0}, alpha=alpha, eps=eps, hub_beta=hub_beta, seed_specificity=False)
+        res = personalized_pagerank(g, {e: 1.0}, alpha=alpha, eps=eps, hub_beta=hub_beta, seed_specificity=False, context=ctx)
         top = sorted(((n, v) for n, v in res.p.items() if n.startswith("mem_")), key=lambda kv: (-kv[1], kv[0]))[:k]
         keep: dict[str, float] = {n: v for n, v in top}
         for n, _ in top:  # keep the ancestors so a path can be explained from cache alone

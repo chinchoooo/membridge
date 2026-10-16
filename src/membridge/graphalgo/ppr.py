@@ -50,6 +50,12 @@ def specificity(degree: int, beta: float = 1.0) -> float:
     return float(1.0 / (1.0 + math.log1p(degree)) ** beta)
 
 
+def graph_context(g: Graph, hub_beta: float = 1.0) -> tuple[dict[str, int], dict[str, float]]:
+    """Degree and specificity of every node. Compute once when running many queries on the same graph."""
+    deg = {n: len(nb) for n, nb in g.adj.items()}
+    return deg, {n: specificity(d, hub_beta) for n, d in deg.items()}
+
+
 def personalized_pagerank(
     g: Graph,
     seeds: dict[str, float],
@@ -59,12 +65,12 @@ def personalized_pagerank(
     hub_beta: float = 1.0,
     seed_specificity: bool = True,
     max_pushes: int = 200_000,
+    context: tuple[dict[str, int], dict[str, float]] | None = None,
 ) -> PPRResult:
     seeds = {s: w for s, w in seeds.items() if w > 0 and s in g.adj}
     if not seeds:
         return PPRResult({}, {})
-    deg = {n: len(nb) for n, nb in g.adj.items()}
-    spec = {n: specificity(d, hub_beta) for n, d in deg.items()}
+    deg, spec = context if context is not None else graph_context(g, hub_beta)
 
     start = {s: w * (spec[s] if seed_specificity else 1.0) for s, w in seeds.items()}
     total = sum(start.values())

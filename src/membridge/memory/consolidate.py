@@ -205,9 +205,8 @@ def _find_existing(store: Store, c: Candidate, dk: str) -> sqlite3.Row | None:
     oc = canonical(c.object) if c.object else None
     mine = _tokens(c.statement)
     for r in store.conn.execute(
-        "SELECT * FROM memories WHERE category=? AND IFNULL(predicate,'')=IFNULL(?,'') "
-        "AND IFNULL(subject,'')=IFNULL(?,'')",
-        (c.category, c.predicate, c.subject),
+        "SELECT * FROM memories WHERE subject IS ? AND predicate IS ? AND category=?",  # null-safe AND index-friendly
+        (c.subject, c.predicate, c.category),
     ):
         same_obj = (
             oc is not None and r["object"] is not None and canonical(r["object"]) == oc
@@ -334,7 +333,7 @@ def _resolve_conflicts(store: Store, new_id: str, c: Candidate) -> None:
     new_obj = c.object_value or canonical(c.object)
     base = c.predicate.split(":")[0]
     rows = store.conn.execute(
-        "SELECT * FROM memories WHERE id!=? AND status IN ('current','unresolved') AND IFNULL(subject,'')=? "
+        "SELECT * FROM memories WHERE id!=? AND status IN ('current','unresolved') AND subject=? "
         "AND (predicate=? OR predicate=? OR predicate LIKE ?)",
         (new_id, c.subject, c.predicate, _OPPOSITE.get(c.predicate, c.predicate), base + ":%"),
     ).fetchall()
