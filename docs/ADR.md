@@ -17,6 +17,7 @@ Status: implemented and measured. Numbers refer to `docs/EVAL.md`. Spec: `MEMBRI
 | Communities | **Leiden** (igraph/leidenalg) when installed, else NetworkX Louvain; stable hash ids so only changed communities are re-summarised; summaries keep links to leaf facts. | One global summary (no drill-down); LLM-only summaries (fidelity gate required). |
 | MCP | Official `mcp` SDK 2.x (`MCPServer`), stdio primary, loopback HTTP + bearer token optional. Two-step destructive ops, tool annotations, audit identity. | FastMCP standalone (extra dependency, no need). |
 | UI | FastAPI + React/TypeScript/Vite; Cytoscape lazy-loaded; localhost-hardened. | A hosted dashboard (violates local-first). |
+| Speed | Content-generation counter maintained by SQL triggers (any process invalidates) → result cache; warm in-memory index; **precomputed per-entity PPR vectors summed at query time (PPR is linear in its seeds)** with live fallback; IDF-pruned FTS; numpy knapsack; no writes on the read path. Measured: 2.5 ms cold / 21 µs repeat on the real archive. | A separate cache server or vector DB (a process boundary costs more than the work); precomputing per-query results (unbounded key space). |
 | Packaging | Modular monolith (`uv` Python package); `docker compose` runs FalkorDB. | Microservices/broker/k8s (no demonstrated need). |
 
 ## Data flow

@@ -22,8 +22,11 @@ optional hosted inference, the MCP HTTP bearer token. 4. Integrity of memory (a 
 | 9 | **Memory poisoning / silent overwrite.** | History is never deleted: supersession invalidates, corrections retract, edits keep revisions, `forget` leaves a tombstone so re-extraction cannot resurrect. Provider-stated and model-inferred facts are labelled and never overwrite user-stated ones. Deleting is soft with the text erased. |
 | 10 | **Data loss.** | Consistent online backup (`membridge backup`), integrity-checked restore that moves the current DB aside, JSON/Markdown export, reproducible rebuild of the graph and embeddings from SQLite. |
 
+| 11 | **Backups, exports and the database at rest.** | `backup/export --encrypt` (scrypt + streaming AES-256-GCM; wrong passphrase, tampering, truncation and chunk reordering all fail authentication; no half-written plaintext is left behind) and `lock`/`unlock`, which encrypts `membridge.db` and removes the plaintext only after the encrypted copy verifies. Tests: `test_crypto.py`. |
+| 12 | **Hosted extraction** (`claude_cli`, opt-in). | Needs `MEMBRIDGE_ALLOW_HOSTED=true`; redaction first; all tools disabled and an empty working directory (no project files reach the model); `--dry-run` shows the exact payload and sends nothing; verbatim-quote and no-invented-number guards; outputs are labelled `model_inferred`. Tests: `test_llm.py`. |
+
 ## Not covered (be aware)
-- The SQLite file and exports are **not encrypted at rest**; rely on OS disk encryption.
+- While **unlocked**, the SQLite file is plaintext (SQLCipher has no Windows build); use `lock` when not in use, and OS disk encryption (BitLocker) for the rest.
 - Anyone with local OS access to your account can read the data and the audit log.
 - Rule-based secret detection is pattern-based and can miss unusual formats.
 - Remote exposure and ChatGPT/other hosted-client connectors are unverified (see `CLIENTS.md`).

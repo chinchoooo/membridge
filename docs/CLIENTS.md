@@ -12,6 +12,7 @@ Set `MEMBRIDGE_CLIENT_NAME` so the audit log shows who did what. Generate ready-
 |---|---|---|
 | **Claude Code** | ✅ verified end to end | Headless `claude -p --mcp-config … --allowedTools mcp__membridge__record_decision` wrote a decision (see `scripts/demo.py --claude`, step 4); a separate process then read it from the same database. |
 | **Generic MCP SDK client (stdio)** | ✅ verified | `tests/test_mcp.py` spawns the server as a separate process per call: write, read, restart-persistence, forget, errors, audit identity. `scripts/second_client.py` is the reusable second client. |
+| **Official MCP Inspector CLI** (TypeScript SDK, an independent implementation) | ✅ verified | `bash scripts/inspector_check.sh`: lists all 20 tools, writes a decision in one process, reads it in another, and an unsafe `save_memory` is refused (`isError: true`). |
 | Cursor, VS Code (Copilot agent mode), opencode | ⚠️ configuration provided, **not verified** here | Installed on the dev machine but they cannot be driven headlessly; the JSON below follows each client's documented format. |
 | ChatGPT / hosted connectors | ⚠️ **not verified**, may be unavailable | Custom MCP connectors depend on plan and usually need a public HTTPS URL. Use `membridge mcp --transport http` behind an authenticated TLS tunnel you control. |
 

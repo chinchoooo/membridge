@@ -41,8 +41,8 @@ Optional local LLM extraction: install Ollama, `MEMBRIDGE_LLM_PROVIDER=ollama ME
 Run the whole demo: `uv run python scripts/demo.py` ([`docs/DEMO.md`](docs/DEMO.md)). Tests: `uv run pytest` (tests that need FalkorDB skip automatically when it is not running).
 
 ## Commands
-`import · seed · extract · extract-llm · classify · summarize-llm · resolve · entity-review · communities · embed · graph-rebuild · ask · search · stats ·
-backup · restore · export · health · serve · mcp`
+`import · seed · extract · extract-llm · classify · summarize-llm · resolve · entity-review · communities · embed · ppr-cache · graph-rebuild · ask · search · stats ·
+backup · restore · export · lock · unlock · gold-init · eval-real · health · serve · mcp`
 
 ## Configuration (env vars, prefix `MEMBRIDGE_`, or `.env`)
 `DATA_DIR` (default `~/.membridge`), `FALKOR_HOST/PORT/GRAPH` (127.0.0.1 / 6390 / membridge), `LLM_PROVIDER` (none|ollama|openai_compat),
@@ -59,13 +59,26 @@ backup · restore · export · health · serve · mcp`
 - *Import says already_imported*: the exact archive was imported; use `--force` to re-scan.
 - *Ollama slow/timeouts*: lower `--window-chars`; it resumes where it stopped.
 
+## Speed
+Memory calls are designed to be nearly free: **2.5 ms cold and ~20 µs repeated** on a real 2,000-message archive, **~3–6 ms cold on 5,000 conversations / 13k memories**
+(measured; see [`docs/EVAL.md`](docs/EVAL.md) §6). Mechanisms: content-generation cache, warm in-memory index, precomputed PageRank vectors, IDF-pruned full-text, vectorised packing.
+Run `uv run python eval/latency.py real` to measure your own store.
+
+## Encryption and backups
+`membridge backup --encrypt`, `membridge export --encrypt` (passphrase from a prompt or an env var *name*), `membridge restore <file.enc>`, and
+`membridge lock` / `unlock` to keep the database encrypted whenever it isn't in use. See [`docs/threat-model.md`](docs/threat-model.md).
+
+## Docker
+`docker compose up -d` runs FalkorDB; `docker compose --profile app up -d` also runs the dashboard/API (published on `127.0.0.1:8787` only, non-root).
+
 ## Limitations (read these)
-- Rule extraction is conservative; real conversational data needs the optional LLM tier, which is slow and noisy on CPU.
-- Benchmarks are synthetic; no precision/recall is claimed on real data (that needs labels only the owner can supply).
-- Only Claude Code and a generic MCP SDK client are verified; Cursor/VS Code/opencode configs are unverified; hosted/ChatGPT connectors are untested.
-- The data is not encrypted at rest. The app itself has no Dockerfile (compose runs FalkorDB only).
-- Consolidation is ~n^1.7: 5,000 conversations take ~2 minutes (the real archive: <1 s).
-- Only the ChatGPT and Claude export formats have adapters.
+- Rule extraction is conservative and finds only 2 candidates in the author's 945 real messages (they are task prompts). Real recall needs the LLM tier:
+  local `phi3` is slow (~59 s/window), and hosted extraction (`claude_cli`, opt-in, redacted, `--dry-run` first) costs money (~$4 for that archive).
+- Benchmarks are synthetic; no precision/recall is claimed on real data until you judge answers with `membridge gold-init` / `eval-real`.
+- Verified clients: Claude Code, the Python MCP SDK client, and the official MCP Inspector CLI. Cursor/VS Code/opencode configs are provided but unverified; hosted/ChatGPT connectors are untested.
+- The live database is plaintext while unlocked (no SQLCipher build for Windows); encrypted backups/exports and `lock`/`unlock` are provided.
+- Consolidation is ≈ n^1.3: 5,000 conversations take ~44 s (missed my 20 s target); your real archive takes under a second.
+- Import formats: ChatGPT, Claude, Claude Code sessions, Markdown/text notes.
 
 ## License
-Add a license of your choice before publishing.
+MIT (see `LICENSE`).
