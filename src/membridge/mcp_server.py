@@ -50,7 +50,7 @@ def _epoch(v: Any) -> float | None:
 
 def _filters(filters: dict[str, Any] | None, date_range: dict[str, Any] | None = None) -> dict[str, Any]:
     f = dict(filters or {})
-    allowed = {"category", "status", "project", "origin", "verification", "since", "until", "include_sensitive"}
+    allowed = {"category", "status", "project", "origin", "verification", "since", "until", "as_of", "known_at", "include_sensitive"}
     bad = set(f) - allowed
     if bad:
         raise ServiceError(f"unknown filter(s) {sorted(bad)}; allowed: {sorted(allowed)}")
@@ -59,6 +59,9 @@ def _filters(filters: dict[str, Any] | None, date_range: dict[str, Any] | None =
         val = _epoch(dr.get(key, f.get(key)))
         if val is not None:
             f[key] = val
+    for key in ("as_of", "known_at"):
+        if key in f:
+            f[key] = _epoch(f[key])
     f.pop("include_sensitive", None)  # an agent cannot opt itself into sensitive memories
     return f
 
@@ -69,7 +72,7 @@ def build_server(service: MemoryService, export_dir: Any, client: str = "mcp") -
     # ---- retrieval -------------------------------------------------------------
     @mcp.tool(annotations=READ)
     def search_memory(query: str, limit: int = 10, filters: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Search stored memories (hybrid text + entity graph). filters: category, status, project, since, until, verification."""
+        """Search stored memories (hybrid text + entity graph). filters: category, status, project, since, until, as_of (what was true on a date), known_at (what we believed then), verification."""
         return service.search_memory(query, limit, _filters(filters))
 
     @mcp.tool(annotations=READ)

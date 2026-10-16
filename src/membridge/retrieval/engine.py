@@ -369,6 +369,12 @@ class Retriever:
         if filters.get("until"):
             sql += " AND IFNULL(valid_from,0)<=?"
             args.append(filters["until"])
+        if filters.get("as_of"):  # world time: what was true on that date
+            sql += " AND IFNULL(valid_at, IFNULL(valid_from,0)) <= ? AND (invalid_at IS NULL OR invalid_at > ?)"
+            args += [filters["as_of"], filters["as_of"]]
+        if filters.get("known_at"):  # knowledge time: what we believed at that moment
+            sql += " AND IFNULL(recorded_at, created_at) <= ? AND (expired_at IS NULL OR expired_at > ?)"
+            args += [filters["known_at"], filters["known_at"]]
         if filters.get("project"):
             sql += (
                 " AND id IN (SELECT me.memory_id FROM memory_entities me JOIN entities e ON e.id=me.entity_id "

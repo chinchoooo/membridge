@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .memory_schema import MEMORY_SCHEMA
+from .migrations import migrate
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS import_jobs (
@@ -110,6 +111,7 @@ class Store:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA + MEMORY_SCHEMA)
+        migrate(self.conn)
         self.conn.commit()
 
     def close(self) -> None:

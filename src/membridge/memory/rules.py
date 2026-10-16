@@ -76,6 +76,7 @@ _SKILL = re.compile(
     r"\bi\s+(?:use|work with|know|code in|program in|write)\s+(?P<obj>[A-Z][\w.+#-]*(?:\s[A-Z][\w.+#-]*){0,2})"
     r"\s+(?:for|to|at)\b",
 )  # fmt: skip
+_CORRECTION = re.compile(r"^\s*(?:actually|correction|sorry|i meant|no,? wait|to correct)\b[:,]?\s", re.I)
 _POSITIVE = {"prefer", "like", "love", "enjoy"}
 
 
@@ -157,10 +158,11 @@ def extract_from_message(
             dropped += 1
             continue
         ents = find_entities(sent, known)
+        is_corr = bool(_CORRECTION.match(sent))
 
-        def mk(category: str, *, sent: str = sent, **kw: object) -> Candidate:
+        def mk(category: str, *, sent: str = sent, corr: bool = is_corr, **kw: object) -> Candidate:
             return Candidate(
-                statement=sent, category=category, ref=message_id, quote=sent, ts=ts,
+                statement=sent, category=category, ref=message_id, quote=sent, ts=ts, correction=corr,
                 sensitivity=sensitivity_of(sent), method="rule", **kw,  # type: ignore[arg-type]
             )  # fmt: skip
 

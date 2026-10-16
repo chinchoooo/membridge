@@ -15,6 +15,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
+from ..resolve.time import parse_date
 from ..store.sqlite import Store
 from .models import (
     CATEGORIES,
@@ -53,33 +54,49 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b) if a and b else 0.0
 
 
+_IMPORTANCE = {
+    "decision": 0.9, "constraint": 0.85, "profile": 0.8, "project": 0.75, "preference": 0.7, "skill": 0.6,
+    "education": 0.6, "research": 0.6, "lesson": 0.6, "health": 0.5, "fact": 0.5, "interest": 0.5, "session": 0.3,
+}  # fmt: skip
+_ACTR_DECAY = 0.5  # ACT-R base-level learning decay d
+
+
+def importance_of(category: str, verification: str) -> float:
+    """Deterministic prior in (0,1): what the user said directly about durable things matters more.
+
+    Bonus is applied to the *remaining headroom* (base + (1-base)*b), so the ordering
+    inferred < stated < verified holds for every category and never saturates.
+    """
+    base = _IMPORTANCE.get(category, 0.5)
+    bonus = {"user_stated": 0.4, "user_verified": 0.6}.get(verification, 0.0)
+    return base + (1.0 - base) * bonus
+
+
+def activation_of(access_times: list[float], now: float) -> float:
+    """ACT-R base-level activation B = ln(sum_j (dt_j+1)^-d) over accesses (days), squashed to (0,1).
+
+    Every confirmation of a fact is an access, so repetition raises activation and age lowers it, without
+    letting frequency alone dominate (importance and confidence are separate terms).
+    """
+    if not access_times:
+        return 0.0
+    total = sum((max(0.0, now - t) / 86400.0 + 1.0) ** -_ACTR_DECAY for t in access_times)
+    return 1.0 / (1.0 + math.exp(-math.log(total)))
+
+
 def score_memory(
-    row: sqlite3.Row | dict[str, object], now: float | None = None
+    row: sqlite3.Row | dict[str, object], now: float | None = None, access_times: list[float] | None = None
 ) -> float:
     now = now or time.time()
-    explicit = {
-        "user_stated": 1.0,
-        "user_verified": 1.0,
-        "provider_stated": 0.7,
-        "model_inferred": 0.4,
-    }.get(str(row["verification"]), 0.4)
-    last = float(row["last_seen"] or row["created_at"] or now)  # type: ignore[arg-type]
-    recency = math.exp(-max(0.0, now - last) / 86400.0 / 365.0)
-    confirm = min(1.0, math.log1p(int(str(row["mention_count"])) - 1) / math.log(6))
-    durable = str(row["category"]) in {
-        "decision",
-        "constraint",
-        "profile",
-        "preference",
-        "project",
-    }
-    score = (
-        0.30 * explicit
-        + 0.15 * recency
-        + 0.15 * confirm
-        + 0.15 * (1.0 if durable else 0.6)
+    explicit = {"user_stated": 1.0, "user_verified": 1.0, "provider_stated": 0.7, "model_inferred": 0.4}.get(
+        str(row["verification"]), 0.4
     )
-    score += 0.25 * float(row["confidence"])  # type: ignore[arg-type]
+    last = float(row["last_seen"] or row["created_at"] or now)  # type: ignore[arg-type]
+    act = activation_of(access_times if access_times else [last], now)
+    imp = importance_of(str(row["category"]), str(row["verification"]))
+    confirm = min(1.0, math.log1p(int(str(row["mention_count"])) - 1) / math.log(6))
+    durable = str(row["category"]) in {"decision", "constraint", "profile", "preference", "project"}
+    score = 0.28 * explicit + 0.20 * act + 0.17 * imp + 0.10 * confirm + 0.25 * float(row["confidence"])  # type: ignore[arg-type]
     if durable and row["status"] == "current":
         score = max(score, 0.5)  # a one-off old decision must stay retrievable
     if row["status"] in ("superseded", "unresolved"):
@@ -87,10 +104,26 @@ def score_memory(
     return round(score, 4)
 
 
-def rescore(store: Store, mem_id: str) -> None:
-    row = store.conn.execute("SELECT * FROM memories WHERE id=?", (mem_id,)).fetchone()
-    store.conn.execute(
-        "UPDATE memories SET score=? WHERE id=?", (score_memory(row), mem_id)
+def rescore(store: Store, mem_id: str, now: float | None = None) -> None:
+    c = store.conn
+    row = c.execute("SELECT * FROM memories WHERE id=?", (mem_id,)).fetchone()
+    now = now or time.time()
+    times = [
+        float(r[0])
+        for r in c.execute(
+            "SELECT g.create_time FROM memory_evidence e JOIN messages g ON g.id=e.ref "
+            "WHERE e.memory_id=? AND g.create_time IS NOT NULL",
+            (mem_id,),
+        )
+    ]
+    c.execute(
+        "UPDATE memories SET score=?, importance=?, activation=? WHERE id=?",
+        (
+            score_memory(row, now, times),
+            importance_of(row["category"], row["verification"]),
+            activation_of(times or [float(row["last_seen"] or row["created_at"] or now)], now),
+            mem_id,
+        ),
     )
 
 
@@ -190,12 +223,16 @@ def upsert(store: Store, c: Candidate) -> Outcome:
 
     mid = memory_id(dk)
     ts = c.ts or now
+    base_pred = (c.predicate or "").split(":")[0]
+    obj_value = c.object_value or (parse_date(c.object, c.ts) if base_pred == "deadline" and c.object else None)
+    c.object_value = obj_value
     store.conn.execute(
         "INSERT INTO memories(id, statement, kind, category, subject, predicate, object, status, verification, "
         "confidence, extraction_method, sensitivity, valid_from, first_seen, last_seen, dedup_key, origin, "
-        "created_at, updated_at) VALUES (?,?,?,?,?,?,?, 'current', ?,?,?,?,?,?,?,?,?,?,?)",
+        "created_at, updated_at, valid_at, recorded_at, object_value) "
+        "VALUES (?,?,?,?,?,?,?, 'current', ?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (mid, c.statement, c.kind, c.category, c.subject, c.predicate, c.object, c.verification, c.confidence,
-         c.method, c.sensitivity, ts, ts, ts, dk, c.origin, now, now),
+         c.method, c.sensitivity, ts, ts, ts, dk, c.origin, now, now, ts, now, obj_value),
     )  # fmt: skip
     store.conn.execute(
         "INSERT INTO memories_fts(memory_id, statement) VALUES (?,?)",
@@ -234,13 +271,25 @@ def _link(store: Store, src: str, rel: str, dst: str, reason: str) -> None:
 
 
 def _supersede(
-    store: Store, newer: str, older: str, reason: str, at: float | None
+    store: Store, newer: str, older: str, reason: str, at: float | None, retract: bool = False
 ) -> None:
+    """Invalidate `older` (world time) without deleting it.
+
+    retract=True is a *correction*: the old statement was never true, so its validity collapses to zero length
+    and `expired_at` records when we learned that (knowledge time). Otherwise it simply stopped being true at `at`.
+    """
     revision(store, older, "consolidator", f"superseded by {newer}: {reason}")
-    store.conn.execute(
-        "UPDATE memories SET status='superseded', valid_to=?, updated_at=? WHERE id=?",
-        (at, time.time(), older),
-    )
+    now = time.time()
+    if retract:
+        store.conn.execute(
+            "UPDATE memories SET status='superseded', valid_to=valid_from, invalid_at=valid_at, expired_at=?, updated_at=? WHERE id=?",
+            (now, now, older),
+        )
+    else:
+        store.conn.execute(
+            "UPDATE memories SET status='superseded', valid_to=?, invalid_at=?, updated_at=? WHERE id=?",
+            (at, at, now, older),
+        )
     _link(store, newer, "SUPERSEDES", older, reason)
     rescore(store, older)
 
@@ -249,7 +298,7 @@ def _resolve_conflicts(store: Store, new_id: str, c: Candidate) -> None:
     if not c.subject or not c.predicate or not c.object:
         return
     new_ts = c.ts or time.time()
-    new_obj = canonical(c.object)
+    new_obj = c.object_value or canonical(c.object)
     base = c.predicate.split(":")[0]
     rows = store.conn.execute(
         "SELECT * FROM memories WHERE id!=? AND status IN ('current','unresolved') AND IFNULL(subject,'')=? "
@@ -257,16 +306,16 @@ def _resolve_conflicts(store: Store, new_id: str, c: Candidate) -> None:
         (new_id, c.subject, c.predicate, _OPPOSITE.get(c.predicate, c.predicate), base + ":%"),
     ).fetchall()
     for old in rows:
-        old_obj = canonical(old["object"] or "")
+        old_obj = old["object_value"] or canonical(old["object"] or "")
         old_ts = old["valid_from"] or 0.0
         # A project uses many technologies: only the same *aspect* (predicate "uses:storage") is replaced,
         # or anything the user explicitly switched away from ("switched X from A to B").
         explicit = c.old_object is not None and canonical(c.old_object) == old_obj and old["predicate"].split(":")[0] == base
         if base in _SUPERSEDABLE and old_obj != new_obj and (old["predicate"] == c.predicate or explicit):
-            reason = "explicit_switch" if explicit else {
+            reason = "correction" if c.correction else "explicit_switch" if explicit else {
                 "uses": "changed_decision", "deadline": "constraint_updated"}.get(base, "updated")  # fmt: skip
             if new_ts >= old_ts:
-                _supersede(store, new_id, old["id"], reason, new_ts)
+                _supersede(store, new_id, old["id"], reason, new_ts, retract=c.correction)
             else:  # an older statement arrived late: it is history, not current
                 _supersede(store, old["id"], new_id, reason, old_ts)
                 store.conn.execute(

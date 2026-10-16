@@ -89,3 +89,5 @@ class Candidate:
     method: str = "rule"
     sensitivity: str = "normal"
     origin: str = "import"
+    correction: bool = False  # user explicitly corrected an earlier statement (retracts it)
+    object_value: str | None = None  # normalised literal (ISO date) for comparison
