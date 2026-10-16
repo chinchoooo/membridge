@@ -14,10 +14,14 @@ from ..store.sqlite import Store
 from .base import ImportAdapter, ParseFailure, RawConversation
 from .chatgpt import ChatGPTAdapter
 from .claude import ClaudeAdapter
+from .claude_code import ClaudeCodeAdapter
+from .notes import NotesAdapter
 
 ADAPTERS: dict[str, ImportAdapter] = {
     "chatgpt": ChatGPTAdapter(),
     "claude": ClaudeAdapter(),
+    "claude_code": ClaudeCodeAdapter(),
+    "notes": NotesAdapter(),  # last: only claims folders with no conversation exports
 }
 
 
