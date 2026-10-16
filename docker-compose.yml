@@ -10,5 +10,28 @@ services:
     environment:
       - FALKORDB_DATA_PATH=/var/lib/falkordb/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Optional: `docker compose --profile app up -d` runs the dashboard/API in a container.
+  # It is published on 127.0.0.1 only. Your data lives in the `membridge-data` volume.
+  app:
+    profiles: ["app"]
+    build: .
+    image: membridge:latest
+    container_name: membridge-app
+    depends_on:
+      falkordb:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${MEMBRIDGE_APP_PORT:-8787}:8787"
+    volumes:
+      - membridge-data:/data
+    restart: unless-stopped
+
 volumes:
   membridge-graph:
+  membridge-data:

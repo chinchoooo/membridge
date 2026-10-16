@@ -1,0 +1,17 @@
+.git
+.venv
+**/node_modules
+web/dist
+**/__pycache__
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.membridge*
+eval/results
+*.zip
+manifest-*.json
+profile.md
+areas
+topics
+_to_delete_*
+.env

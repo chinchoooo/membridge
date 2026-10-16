@@ -3,6 +3,8 @@ name = "membridge"
 version = "0.1.0"
 description = "Local-first, cross-assistant personal AI memory system"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
   "pydantic>=2.7",
   "pydantic-settings>=2.3",

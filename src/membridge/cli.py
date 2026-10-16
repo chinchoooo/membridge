@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -314,8 +315,8 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
     """Run the dashboard/API (bound to localhost)."""
     import uvicorn
 
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        typer.secho("Refusing to bind a non-loopback address.", fg=typer.colors.RED, err=True)
+    if host not in ("127.0.0.1", "localhost", "::1") and os.environ.get("MEMBRIDGE_IN_CONTAINER") != "1":
+        typer.secho("Refusing to bind a non-loopback address (set only inside the official container).", fg=typer.colors.RED, err=True)
         raise typer.Exit(2)
     uvicorn.run("membridge.api.app:create_app", factory=True, host=host, port=port, log_level="info")
 
