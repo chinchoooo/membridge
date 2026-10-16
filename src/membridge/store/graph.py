@@ -194,10 +194,7 @@ class GraphStore:
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MATCH (a:Entity {id:r.a}), (b:Entity {id:r.b}) MERGE (a)-[x:RELATED_TO]->(b) SET x.weight=r.w",
-            rows("SELECT a.entity_id AS a, b.entity_id AS b, COUNT(*) AS w FROM memory_entities a "
-                 "JOIN memory_entities b ON a.memory_id=b.memory_id AND a.entity_id<b.entity_id "
-                 "JOIN memories m ON m.id=a.memory_id JOIN live_entities ea ON ea.id=a.entity_id "
-                 "JOIN live_entities eb ON eb.id=b.entity_id WHERE m.status!='deleted' GROUP BY a.entity_id, b.entity_id"), "edges",
+            rows("SELECT a_entity AS a, b_entity AS b, weight AS w FROM entity_cooccurrence"), "edges",
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MATCH (a:Entity {id:r.a}), (b:Entity {id:r.b}) "

@@ -31,6 +31,9 @@ class CommunityReport:
 
 def build_entity_graph(store: Store) -> nx.Graph[Any]:
     """Weighted undirected graph: co-occurrence in facts, typed relations, and (weakly) shared conversations."""
+    from ..resolve.relations import rebuild_entity_edges
+
+    rebuild_entity_edges(store)  # refresh typed relations + the co-occurrence table this graph is built from
     g: nx.Graph[Any] = nx.Graph()
     c = store.conn
     live = {r[0] for r in c.execute("SELECT DISTINCT me.entity_id FROM memory_entities me JOIN memories m ON m.id=me.memory_id "
@@ -42,11 +45,7 @@ def build_entity_graph(store: Store) -> nx.Graph[Any]:
         if a != b and a in live and b in live:
             g.add_edge(a, b, weight=g.get_edge_data(a, b, {}).get("weight", 0.0) + w)
 
-    for r in c.execute(
-        "SELECT a.entity_id AS a, b.entity_id AS b, COUNT(*) AS n FROM memory_entities a JOIN memory_entities b "
-        "ON a.memory_id=b.memory_id AND a.entity_id<b.entity_id JOIN memories m ON m.id=a.memory_id "
-        "WHERE m.status!='deleted' GROUP BY a.entity_id, b.entity_id"
-    ):
+    for r in c.execute("SELECT a_entity AS a, b_entity AS b, weight AS n FROM entity_cooccurrence"):
         bump(r["a"], r["b"], float(r["n"]))
     for r in c.execute("SELECT src_entity AS a, dst_entity AS b, MAX(weight) AS w FROM entity_edges GROUP BY src_entity, dst_entity"):
         bump(r["a"], r["b"], float(r["w"]))

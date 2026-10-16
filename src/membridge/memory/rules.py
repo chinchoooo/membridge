@@ -132,9 +132,13 @@ def find_entities(sentence: str, known: set[str] | None = None) -> list[EntityRe
         if sentence_initial and not mid_capital and c not in known:
             continue
         found.setdefault(c, EntityRef(run))
-    for k in known:
-        if re.search(rf"\b{re.escape(k)}\b", canonical(sentence)):
-            found.setdefault(k, EntityRef(k))
+    if known:  # word n-gram lookup: O(sentence length), independent of how many entities are known
+        words = canonical(sentence).split()
+        for n in range(1, 6):
+            for i in range(len(words) - n + 1):
+                gram = " ".join(words[i : i + n])
+                if gram in known:
+                    found.setdefault(gram, EntityRef(gram))
     return list(found.values())
 
 
@@ -171,12 +175,14 @@ def extract_from_message(
         def subject_entity(subj_phrase: str | None, ents: list[EntityRef] = ents) -> str | None:
             if subj_phrase:
                 subj_c = canonical(subj_phrase)
-                for e in ents + [EntityRef(k) for k in known]:
-                    if (
-                        canonical(e.name) in subj_c.split()
-                        or canonical(e.name) in subj_c
-                    ):
+                for e in ents:  # entities seen in this sentence first
+                    if canonical(e.name) in subj_c:
                         return canonical(e.name)
+                words = subj_c.split()  # then any known entity named inside the subject phrase (n-gram lookup)
+                for n in (3, 2, 1):
+                    for i in range(len(words) - n + 1):
+                        if (gram := " ".join(words[i : i + n])) in known:
+                            return gram
             for e in ents:
                 if canonical(e.name) in known:
                     return canonical(e.name)

@@ -128,10 +128,32 @@ def _m3_entity_merge_pointer(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE VIEW live_entities AS SELECT * FROM entities WHERE merged_into IS NULL")
 
 
+def _m4_scale_indexes(conn: sqlite3.Connection) -> None:
+    """Found by the scale test: summary/provenance queries scanned memory_evidence once per conversation."""
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_ref ON memory_evidence(ref)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_links_dst ON memory_links(dst_id, rel)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mentions_conv ON entity_mentions(conversation_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_extract_msg ON extraction_state(message_id)")
+    conn.execute("ANALYZE")
+
+
+def _m5_cooccurrence(conn: sqlite3.Connection) -> None:
+    """Materialised entity co-occurrence (weak RELATED_TO signal). Recomputing the self-join per query dominated latency."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS entity_cooccurrence (a_entity TEXT NOT NULL, b_entity TEXT NOT NULL, weight REAL NOT NULL, "
+        "PRIMARY KEY (a_entity, b_entity))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cooc_b ON entity_cooccurrence(b_entity)")
+    conn.execute("DELETE FROM entity_cooccurrence")
+    conn.execute("INSERT INTO entity_cooccurrence(a_entity, b_entity, weight) SELECT a.entity_id, b.entity_id, COUNT(*) FROM memory_entities a JOIN memory_entities b ON a.memory_id=b.memory_id AND a.entity_id<b.entity_id JOIN memories m ON m.id=a.memory_id JOIN live_entities ea ON ea.id=a.entity_id JOIN live_entities eb ON eb.id=b.entity_id WHERE m.status!='deleted' GROUP BY a.entity_id, b.entity_id")
+
+
 MIGRATIONS: list[tuple[int, str, Migration]] = [
     (1, "baseline (v1 schema from sqlite.py/memory_schema.py)", lambda c: None),
     (2, "bitemporal facts, triples, aliases, merges, relations, communities, embeddings", _m2_bitemporal_and_graph_tables),
     (3, "entity merge pointer + live_entities view", _m3_entity_merge_pointer),
+    (4, "scale indexes (evidence.ref, links.dst, mentions.conv)", _m4_scale_indexes),
+    (5, "materialised entity co-occurrence", _m5_cooccurrence),
 ]
 LATEST = MIGRATIONS[-1][0]
 

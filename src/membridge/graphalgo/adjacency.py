@@ -93,10 +93,7 @@ def _sql_neighbors(store: Store, ids: list[str]) -> list[tuple[str, str, str, fl
     ):
         out.append((r["a"], r["b"], "REL", edge_weight("REL", weight=r["w"])))
     for r in c.execute(
-        f"SELECT a.entity_id AS a, b.entity_id AS b, COUNT(*) AS w FROM memory_entities a JOIN memory_entities b "
-        f"ON a.memory_id=b.memory_id AND a.entity_id<b.entity_id JOIN memories m ON m.id=a.memory_id "
-        f"JOIN live_entities ea ON ea.id=a.entity_id JOIN live_entities eb ON eb.id=b.entity_id "
-        f"WHERE m.status!='deleted' AND (a.entity_id IN ({q}) OR b.entity_id IN ({q})) GROUP BY a.entity_id, b.entity_id",
+        f"SELECT a_entity AS a, b_entity AS b, weight AS w FROM entity_cooccurrence WHERE a_entity IN ({q}) OR b_entity IN ({q})",
         ids + ids,
     ):
         out.append((r["a"], r["b"], "RELATED_TO", edge_weight("RELATED_TO", weight=r["w"])))

@@ -44,5 +44,9 @@ def rebuild_entity_edges(store: Store) -> dict[str, int]:
             (r["s"], base.upper(), r["o"], r["id"], w, r["v"], r["iv"]),
         )
         n += cur.rowcount
+    c.execute("DELETE FROM entity_cooccurrence")
+    c.execute(
+        "INSERT INTO entity_cooccurrence(a_entity, b_entity, weight) SELECT a.entity_id, b.entity_id, COUNT(*) FROM memory_entities a JOIN memory_entities b ON a.memory_id=b.memory_id AND a.entity_id<b.entity_id JOIN memories m ON m.id=a.memory_id JOIN live_entities ea ON ea.id=a.entity_id JOIN live_entities eb ON eb.id=b.entity_id WHERE m.status!='deleted' GROUP BY a.entity_id, b.entity_id"
+    )
     c.commit()
     return {"edges": n}
