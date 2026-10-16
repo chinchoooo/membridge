@@ -1,0 +1,14 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: membridge-falkordb
+    # Bound to localhost only: the graph database must never be reachable from the network.
+    ports:
+      - "127.0.0.1:${MEMBRIDGE_FALKOR_PORT:-6390}:6379"
+    volumes:
+      - membridge-graph:/var/lib/falkordb/data
+    environment:
+      - FALKORDB_DATA_PATH=/var/lib/falkordb/data
+    restart: unless-stopped
+volumes:
+  membridge-graph:

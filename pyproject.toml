@@ -1,0 +1,52 @@
+[project]
+name = "membridge"
+version = "0.1.0"
+description = "Local-first, cross-assistant personal AI memory system"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "typer>=0.12",
+  "ijson>=3.3",
+  "falkordb>=1.8.0",
+  "httpx>=0.28.1",
+  "fastapi>=0.143.3",
+  "uvicorn[standard]>=0.54.0",
+  "mcp>=2",
+  "psutil>=7.2.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+ "mypy>=1.10",
+ "ruff>=0.5",
+ "types-psutil>=7.2.2.20260906",
+]
+
+[project.scripts]
+membridge = "membridge.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/membridge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+files = ["src"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"eval/*" = ["E402"]
