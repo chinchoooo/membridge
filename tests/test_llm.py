@@ -187,3 +187,96 @@ def test_invalid_category_from_model_is_rejected_by_schema(export_file: Path, st
     bad = {"memories": [{"statement": "User loves hiking in the Alps", "category": "not_a_category", "quote": "a data pipeline"}]}
     st = extract_with_llm(store, FakeLLM(lambda s, u, sc: bad))
     assert st.created == 0 and st.errors > 0  # whole window is retried later, nothing stored
+
+
+# ---- hosted extraction via the claude CLI: safety properties, tested with a fake subprocess ---------------------------
+def test_claude_cli_runs_without_tools_in_an_empty_dir_and_tracks_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from membridge.llm.providers import ClaudeCLILLM
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen.update(cmd=cmd, cwd=kw["cwd"], stdin=kw["input"])
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"is_error": False, "total_cost_usd": 0.05, "structured_output": {"memories": []}}), "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    llm = ClaudeCLILLM("haiku")
+    assert llm.complete_json("sys", "usr", {"type": "object"}) == {"memories": []}
+    llm.complete_json("sys", "usr", {"type": "object"})
+    cmd = seen["cmd"]
+    assert cmd[:2] == ["claude", "-p"] and "--json-schema" in cmd and "--disallowedTools" in cmd
+    assert {"Bash", "Write", "Edit", "Read", "WebFetch"} <= set(cmd[cmd.index("--disallowedTools") + 1].split(","))
+    assert "membridge" not in str(seen["cwd"]).lower() and seen["stdin"].startswith("sys")  # an empty temp dir, not the project
+    assert llm.calls == 2 and llm.cost_usd == pytest.approx(0.10)
+
+
+def test_claude_cli_errors_become_llm_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from membridge.llm.providers import ClaudeCLILLM
+
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "not json", ""))
+    with pytest.raises(LLMError, match="non-JSON"):
+        ClaudeCLILLM().complete_json("s", "u", {})
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, json.dumps({"is_error": True, "result": "auth"}), ""))
+    with pytest.raises(LLMError, match="claude CLI error"):
+        ClaudeCLILLM().complete_json("s", "u", {})
+
+
+def test_claude_cli_provider_needs_explicit_opt_in() -> None:
+    with pytest.raises(LLMError, match="MEMBRIDGE_ALLOW_HOSTED"):
+        build_llm(Settings(llm_provider="claude_cli"))
+    assert build_llm(Settings(llm_provider="claude_cli", allow_hosted=True)).name == "claude-cli:haiku"  # type: ignore[union-attr]
+
+
+class _RemoteFake(FakeLLM):
+    is_remote = True
+    redact_remote = True
+
+
+def test_dry_run_sends_nothing_and_writes_the_exact_redacted_payload(tmp_path: Path, store: Store) -> None:
+    store.conn.execute("INSERT INTO conversations(id, source, external_id, title, content_hash, message_count, first_job, last_job) VALUES ('c1','t','e','T','h',1,'j','j')")
+    store.conn.execute(
+        "INSERT INTO messages(id, conversation_id, external_id, seq, role, create_time, content_type, text, content_hash, on_current_branch, import_job) "
+        "VALUES ('m1','c1','x',0,'user',1.0,'text','Mail me at jane.doe@example.com about my Atlas migration plans please','h',1,'j')"
+    )
+    store.conn.commit()
+    llm = _RemoteFake(lambda s, u, sc: pytest.fail("dry run must not call the model"))
+    out = tmp_path / "dry" / "payloads.jsonl"
+    st = extract_with_llm(store, llm, dry_run_path=out)
+    rec = json.loads(out.read_text().splitlines()[0])
+    assert st.windows == 1 and st.redactions == {"EMAIL": 1} and st.chars > 0 and llm.calls == []
+    assert "jane.doe" not in rec["payload"] and "[EMAIL]" in rec["payload"] and "Atlas migration" in rec["payload"]
+    assert store.conn.execute("SELECT COUNT(*) FROM extraction_state").fetchone()[0] == 0  # nothing marked processed
+
+
+def test_parallel_extraction_matches_sequential_and_applies_in_order(export_file: Path, tmp_path: Path) -> None:
+    def handler(system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+        return {"memories": [{"statement": "User is building a sensor data pipeline", "category": "project", "explicit": True,
+                              "quote": "a data pipeline for my sensor readings"}]} if "sensor readings" in user else {"memories": []}  # fmt: skip
+
+    counts = []
+    for workers in (1, 4):
+        s = Store(tmp_path / f"w{workers}.db")
+        run_import(s, export_file)
+        st = extract_with_llm(s, FakeLLM(handler), workers=workers, window_chars=300)
+        counts.append((st.windows, st.created, st.errors, s.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]))
+        s.close()
+    assert counts[0] == counts[1] and counts[0][1] == 1
+
+
+def test_numbers_the_user_never_wrote_are_rejected(export_file: Path, store: Store) -> None:
+    _imported(export_file, store)
+
+    def handler(system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+        if "sensor readings" not in user:
+            return {"memories": []}
+        return {"memories": [
+            {"statement": "User started the Atlas pipeline in March 2019 for 40 sensors", "category": "project", "quote": "a data pipeline for my sensor readings"},
+            {"statement": "User is building the Atlas sensor pipeline", "category": "project", "quote": "a data pipeline for my sensor readings"},
+        ]}  # fmt: skip
+
+    st = extract_with_llm(store, FakeLLM(handler))
+    assert st.created == 1 and st.rejected_other == 1

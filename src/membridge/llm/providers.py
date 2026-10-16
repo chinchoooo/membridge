@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import tempfile
+import threading
 from typing import Any
 
 import httpx
@@ -81,3 +84,43 @@ class OpenAICompatLLM:
             raise LLMError(f"hosted LLM request failed ({e.__class__.__name__})") from e
         except (KeyError, IndexError, ValueError) as e:
             raise LLMError(f"unexpected hosted LLM response: {e}") from e
+
+
+_NO_TOOLS = "Bash,Edit,Write,Read,WebFetch,WebSearch,Glob,Grep,Task,NotebookEdit,TodoWrite"
+
+
+class ClaudeCLILLM:
+    """Hosted extraction through the user's own logged-in Claude Code (`claude -p`). Runs with every tool disabled, in an
+    empty temp directory (no project files, no CLAUDE.md), with a JSON schema for the output. Remote: GuardedLLM redacts first."""
+
+    is_remote = True
+
+    def __init__(self, model: str = "haiku", timeout: float = 240.0) -> None:
+        self.name = f"claude-cli:{model}"
+        self.model, self.timeout = model, timeout
+        self.cost_usd = 0.0
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def complete_json(self, system: str, user: str, schema: dict[str, Any], *, max_tokens: int = 1200) -> dict[str, Any]:
+        cmd = ["claude", "-p", "--model", self.model, "--output-format", "json", "--json-schema", json.dumps(schema), "--disallowedTools", _NO_TOOLS]
+        try:
+            with tempfile.TemporaryDirectory() as empty:
+                r = subprocess.run(cmd, input=f"{system}\n\n{user}", capture_output=True, text=True, timeout=self.timeout, cwd=empty)
+        except FileNotFoundError as e:
+            raise LLMError("the `claude` CLI was not found on PATH") from e
+        except subprocess.TimeoutExpired as e:
+            raise LLMError("claude CLI timed out") from e
+        try:
+            d = json.loads(r.stdout)
+        except json.JSONDecodeError as e:
+            raise LLMError(f"claude CLI returned non-JSON output (exit {r.returncode})") from e
+        with self._lock:
+            self.calls += 1
+            self.cost_usd += float(d.get("total_cost_usd") or 0.0)
+        if d.get("is_error"):
+            raise LLMError(f"claude CLI error: {str(d.get('result'))[:120]}")
+        out = d.get("structured_output")
+        if isinstance(out, dict):
+            return out
+        return _parse_json(str(d.get("result") or ""))

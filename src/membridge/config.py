@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     falkor_port: int = 6390
     falkor_graph: str = "membridge"
     # LLM is optional: with "none" import, graph, retrieval and rule-based extraction all still work.
-    llm_provider: str = "none"  # none | ollama | openai_compat
+    llm_provider: str = "none"  # none | ollama | openai_compat | claude_cli
     llm_model: str = "phi3"
     llm_base_url: str = "http://127.0.0.1:11434"  # ollama; for openai_compat e.g. https://api.openai.com/v1
     llm_api_key_env: str = "MEMBRIDGE_LLM_API_KEY"  # NAME of the env var holding the key; never the key itself

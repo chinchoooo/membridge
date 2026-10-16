@@ -11,10 +11,12 @@ Safety design (imported text is untrusted data):
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -80,6 +82,8 @@ class LLMExtractStats:
     created: int = 0
     confirmed: int = 0
     errors: int = 0
+    chars: int = 0
+    redactions: dict[str, int] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 
 
@@ -105,11 +109,15 @@ def _windows(rows: list[Any], window_chars: int = WINDOW_CHARS, msg_chars: int =
 
 def extract_with_llm(
     store: Store, llm: LLM, *, max_windows: int | None = None, progress: Callable[[LLMExtractStats], None] | None = None,
-    window_chars: int = WINDOW_CHARS, msg_chars: int = MSG_PROMPT_CHARS,
+    window_chars: int = WINDOW_CHARS, msg_chars: int = MSG_PROMPT_CHARS, workers: int = 1, dry_run_path: Path | None = None,
 ) -> LLMExtractStats:
-    """Resumable: processed messages are recorded per model, so re-running continues where it stopped."""
+    """Resumable: processed messages are recorded per model, so re-running continues where it stopped.
+
+    workers > 1 sends windows concurrently (results are still applied in order, on this thread). With dry_run_path nothing is
+    sent: the exact (redacted, for remote providers) payloads are written there and counts are returned."""
     st = LLMExtractStats()
     extractor = f"{EXTRACTOR_PREFIX}:{llm.name}"
+    tasks: list[tuple[list[Any], str]] = []
     for conv in store.conn.execute("SELECT id FROM conversations ORDER BY IFNULL(create_time,0), id").fetchall():
         rows = store.conn.execute(
             "SELECT m.id, m.text, m.create_time FROM messages m WHERE m.conversation_id=? AND m.role='user' "
@@ -118,17 +126,44 @@ def extract_with_llm(
             (conv["id"], extractor),
         ).fetchall()
         for win in _windows(rows, window_chars, msg_chars):
-            if max_windows is not None and st.windows >= max_windows:
-                return st
-            st.windows += 1
-            st.messages += len(win)
-            prompt = "\n".join(f"[m{i}] {r['text'][:msg_chars]}" for i, r in enumerate(win, 1))
-            try:
-                raw = llm.complete_json(SYSTEM_EXTRACT, f"<untrusted_messages>\n{prompt}\n</untrusted_messages>", EXTRACT_SCHEMA, max_tokens=900)
-                out = _Out.model_validate(raw)
-            except (LLMError, ValidationError) as e:
+            if max_windows is not None and len(tasks) >= max_windows:
+                break
+            body = "\n".join(f"[m{i}] {r['text'][:msg_chars]}" for i, r in enumerate(win, 1))
+            tasks.append((win, f"<untrusted_messages>\n{body}\n</untrusted_messages>"))
+    st.windows, st.messages = len(tasks), sum(len(w) for w, _ in tasks)
+    if dry_run_path is not None:
+        from ..llm.redact import redact
+
+        dry_run_path.parent.mkdir(parents=True, exist_ok=True)
+        with dry_run_path.open("w", encoding="utf-8") as f:
+            for i, (win, payload) in enumerate(tasks):
+                if llm.is_remote and getattr(llm, "redact_remote", True):
+                    payload, counts = redact(payload)
+                    for k, v in counts.items():
+                        st.redactions[k] = st.redactions.get(k, 0) + v
+                st.chars += len(payload) + len(SYSTEM_EXTRACT)
+                f.write(json.dumps({"window": i, "message_ids": [r["id"] for r in win], "system": SYSTEM_EXTRACT, "payload": payload}) + "\n")
+        return st
+
+    def call(task: tuple[list[Any], str]) -> tuple[_Out | None, Exception | None]:
+        try:
+            return _Out.model_validate(llm.complete_json(SYSTEM_EXTRACT, task[1], EXTRACT_SCHEMA, max_tokens=900)), None
+        except (LLMError, ValidationError) as e:
+            return None, e
+
+    if workers > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        pool = ThreadPoolExecutor(max_workers=workers)
+        results = pool.map(call, tasks)
+    else:
+        pool = None
+        results = map(call, tasks)
+    try:
+        for (win, _), (out, err) in zip(tasks, results, strict=True):
+            if err is not None or out is None:
                 st.errors += 1
-                st.notes.append(f"window failed: {type(e).__name__}")
+                st.notes.append(f"window failed: {type(err).__name__}")
                 continue  # not marked processed: it will be retried on the next run
             for m in out.memories[:12]:
                 st.proposed += 1
@@ -139,12 +174,19 @@ def extract_with_llm(
             store.conn.commit()
             if progress:
                 progress(st)
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
     return st
 
 
 def _store_candidate(store: Store, m: _Mem, win: list[Any], model: str, st: LLMExtractStats) -> None:
     if m.category not in CATEGORIES or contains_secret(m.statement) or contains_secret(m.quote):
         st.rejected_other += 1
+        return
+    window_text = _norm(" ".join(r["text"] for r in win))
+    if any(n.strip(".,") not in window_text for n in re.findall(r"\d[\d,.]*", m.statement)):
+        st.rejected_other += 1  # a number/date the user never wrote: a model-added detail, not a memory
         return
     q = _norm(m.quote)
     src = next((r for r in win if q in _norm(r["text"])), None)

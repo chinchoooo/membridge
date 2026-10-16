@@ -136,6 +136,8 @@ def extract_llm(
     max_windows: Annotated[int | None, typer.Option(help="Stop after N prompt windows (resumable)")] = None,
     window_chars: Annotated[int, typer.Option(help="Characters of conversation per LLM call")] = 1600,
     msg_chars: Annotated[int, typer.Option(help="Max characters taken from one message")] = 900,
+    workers: Annotated[int, typer.Option(help="Concurrent LLM calls (hosted providers)")] = 1,
+    dry_run: Annotated[bool, typer.Option(help="Write the exact payloads to a file and send NOTHING")] = False,
 ) -> None:
     """LLM extraction of memories (local by default; hosted needs MEMBRIDGE_ALLOW_HOSTED=true)."""
     from .memory.llm_tasks import extract_with_llm
@@ -143,7 +145,8 @@ def extract_llm(
     settings = Settings()
     llm = _llm_or_exit(settings)
     store = Store(settings.db_path)
-    st = extract_with_llm(store, llm, max_windows=max_windows, window_chars=window_chars, msg_chars=msg_chars,
+    dry = (settings.data_dir / "llm-dryrun" / f"payloads-{int(__import__('time').time())}.jsonl") if dry_run else None
+    st = extract_with_llm(store, llm, max_windows=max_windows, window_chars=window_chars, msg_chars=msg_chars, workers=workers, dry_run_path=dry,
                           progress=lambda s: typer.echo(f"windows={s.windows} created={s.created} errors={s.errors}", err=True))  # fmt: skip
     typer.echo(json.dumps({**st.__dict__, "provider": llm.name, "remote": llm.is_remote,
                            "chars_sent_remote": getattr(llm, "sent_chars", 0), "redactions": getattr(llm, "redactions", {})}, indent=2))  # fmt: skip
