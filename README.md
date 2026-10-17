@@ -38,7 +38,7 @@ Optional extras: `uv sync --extra embeddings` (semantic channel: `membridge embe
 Optional local LLM extraction: install Ollama, `MEMBRIDGE_LLM_PROVIDER=ollama MEMBRIDGE_LLM_MODEL=phi3 uv run membridge extract-llm`
 (slow on CPU, resumable, labelled `model_inferred`). Hosted inference requires `MEMBRIDGE_ALLOW_HOSTED=true` and redacts first.
 
-Run the whole demo: `uv run python scripts/demo.py` ([`docs/DEMO.md`](docs/DEMO.md)). Tests: `uv run pytest` (tests that need FalkorDB skip automatically when it is not running).
+Run the whole demo: `uv run python scripts/demo.py` ([`docs/DEMO.md`](docs/DEMO.md)). Trust, consent and forgetting (no Docker): `uv run python scripts/demo_trust.py`. One-page summary: [`docs/SUBMISSION.md`](docs/SUBMISSION.md). Tests: `uv run pytest` (tests that need FalkorDB skip automatically when it is not running).
 
 ## Commands
 `import · seed · seed-text · restructure · extract · extract-llm · classify · summarize-llm · resolve · entity-review · communities · embed · ppr-cache · graph-rebuild · ask · search · stats ·
