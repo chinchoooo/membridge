@@ -172,3 +172,10 @@ def test_pin_grant_and_revoke_flow(client: TestClient) -> None:
     assert status["pin_set"] and status["grants"][0]["active"]
     assert client.post("/api/private/revoke", json={"client": "claude-code"}, headers=H).json() == {"revoked": 1}
     assert not client.get("/api/private/status").json()["grants"][0]["active"]
+
+
+def test_ping_is_the_only_unauthenticated_endpoint_and_says_nothing(client: TestClient) -> None:
+    anon = TestClient(client.app, base_url="http://127.0.0.1")
+    r = anon.get("/api/ping")
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert anon.get("/api/health").status_code == 401 and anon.get("/api/overview").status_code == 401

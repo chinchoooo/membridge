@@ -14,6 +14,7 @@ from typing import Any
 
 from .memory_schema import MEMORY_SCHEMA
 from .migrations import migrate
+from .openlock import OpenMarker
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS import_jobs (
@@ -112,6 +113,7 @@ class Store:
         if not path.exists() and path.with_suffix(path.suffix + ".enc").exists():
             raise VaultLockedError(f"{path.name} is locked (encrypted at rest). Run `membridge unlock` first.")
         self.path = path
+        self._marker = OpenMarker(path)  # lets `membridge lock` see that this database is in use
         self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
         self.conn.execute("PRAGMA busy_timeout=30000")  # a CLI import and a running server wait for each other, not fail
         self._audit_buf: list[tuple[float, str, str, str | None, str]] = []
@@ -135,6 +137,7 @@ class Store:
             self.flush_audit()
         finally:
             self.conn.close()
+            self._marker.release()
 
     # ---- read-path audit: buffered, so a search never commits ---------------------------------------------
     def audit_read(self, actor: str, action: str, target: str | None = None, **detail: Any) -> None:

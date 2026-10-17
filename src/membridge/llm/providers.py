@@ -32,12 +32,14 @@ def _parse_json(text: str) -> dict[str, Any]:
 class OllamaLLM:
     """Local model through Ollama. Uses schema-constrained decoding via the `format` parameter."""
 
-    is_remote = False
-
     def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434", timeout: float = 300.0,
                  transport: httpx.BaseTransport | None = None) -> None:  # fmt: skip
+        from urllib.parse import urlparse
+
         self.name = f"ollama:{model}"
         self.model, self.base_url = model, base_url.rstrip("/")
+        # "local" is a fact about the URL, not about the provider's name: text sent to another machine is remote
+        self.is_remote = (urlparse(base_url).hostname or "").lower() not in ("127.0.0.1", "localhost", "::1")
         self._client = httpx.Client(timeout=timeout, transport=transport)
 
     def complete_json(self, system: str, user: str, schema: dict[str, Any], *, max_tokens: int = 1200) -> dict[str, Any]:

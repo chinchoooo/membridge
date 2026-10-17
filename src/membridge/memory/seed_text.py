@@ -20,7 +20,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..store.sqlite import Store
-from .consolidate import _link, _supersede, refresh_entity_links, upsert, upsert_entity
+from .consolidate import (
+    _link,
+    _resolve_conflicts,
+    _supersede,
+    dedup_key_of,
+    refresh_entity_links,
+    rescore,
+    upsert,
+    upsert_entity,
+)
 from .models import Candidate, EntityRef, canonical, contains_secret, sensitivity_of, sha
 from .pipeline import _doc
 from .rules import extract_from_message
@@ -315,4 +324,44 @@ def _seed_change(store: Store, it: Item, did: str, ts: float | None, user: str |
             _supersede(store, ids[i + 1], mid, reason, whens[i + 1])
 
 
-__all__ = ["parse_dump", "parse_when", "seed_from_text", "derive_triple", "infer_user_subject", "first_person"]
+def restructure_existing(store: Store, *, dry_run: bool = False) -> dict[str, int]:
+    """Give plain facts imported earlier (before structured triples existed) their triple, in place, and then let the
+    normal conflict rules see them. Idempotent: only rows without a predicate are touched. Nothing is deleted or merged
+    with anything else; a conflict found now is recorded the way it would have been at import time."""
+    rows = store.conn.execute(
+        "SELECT * FROM memories WHERE origin='chatgpt_memory' AND predicate IS NULL AND status!='deleted' AND kind='semantic'"
+    ).fetchall()
+    user = infer_user_subject([Item("fact", r["statement"]) for r in rows])
+    out = {"candidates": len(rows), "structured": 0, "conflicts_found": 0, "skipped_key_clash": 0}
+    for r in rows:
+        t = derive_triple(r["statement"], user)
+        if t is None:
+            continue
+        out["structured"] += 1
+        c = Candidate(
+            statement=r["statement"], category=r["category"], subject=t.subject, predicate=t.predicate, object=t.object,
+            old_object=t.old_object, entities=t.entities, ref="", confidence=r["confidence"], verification=r["verification"],
+            ts=r["valid_at"] if r["valid_time_known"] else None, origin=r["origin"],
+        )  # fmt: skip
+        dk = dedup_key_of(c)
+        if store.conn.execute("SELECT 1 FROM memories WHERE dedup_key=? AND id!=?", (dk, r["id"])).fetchone():
+            out["skipped_key_clash"] += 1
+            continue
+        if dry_run:
+            continue
+        before = store.conn.execute("SELECT COUNT(*) FROM memory_links").fetchone()[0]
+        store.conn.execute("UPDATE memories SET subject=?, predicate=?, object=?, dedup_key=?, updated_at=? WHERE id=?",
+                           (c.subject, c.predicate, c.object, dk, time.time(), r["id"]))  # fmt: skip
+        for ref in t.entities:
+            eid = upsert_entity(store, ref)
+            if eid:
+                store.conn.execute("INSERT OR IGNORE INTO memory_entities(memory_id, entity_id, role) VALUES (?,?,'about')", (r["id"], eid))
+        _resolve_conflicts(store, r["id"], c)
+        rescore(store, r["id"])
+        out["conflicts_found"] += store.conn.execute("SELECT COUNT(*) FROM memory_links").fetchone()[0] - before
+    if not dry_run:
+        store.conn.commit()
+    return out
+
+
+__all__ = ["parse_dump", "parse_when", "seed_from_text", "derive_triple", "infer_user_subject", "first_person", "restructure_existing"]

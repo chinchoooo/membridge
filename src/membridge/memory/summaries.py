@@ -28,11 +28,13 @@ def _put(store: Store, level: str, ref: str, text: str, source_hash: str) -> boo
     return True
 
 
-def refresh_summaries(store: Store) -> dict[str, int]:
+def refresh_summaries(store: Store, *, only_projects: set[str] | None = None) -> dict[str, int]:
+    """Rebuild stale summaries. `only_projects` (entity ids) limits the work to those projects plus the personal summary:
+    a single new decision must not re-read every conversation."""
     changed = {"conversation": 0, "project": 0, "personal": 0}
     c = store.conn
     # conversation level: title, opening user message, memories supported by it
-    for conv in c.execute(
+    for conv in [] if only_projects is not None else c.execute(
         "SELECT id, title, message_count FROM conversations"
     ).fetchall():
         first = c.execute(
@@ -59,6 +61,8 @@ def refresh_summaries(store: Store) -> dict[str, int]:
         )
     # project level: current memories about the project entity, plus history count
     for e in c.execute("SELECT id, name FROM live_entities WHERE type='project'").fetchall():
+        if only_projects is not None and e["id"] not in only_projects:
+            continue
         mems = c.execute(
             "SELECT DISTINCT m.id, m.statement, m.status, m.category, m.updated_at FROM memories m "
             "JOIN memory_entities me ON me.memory_id=m.id WHERE me.entity_id=? AND m.status!='deleted' AND m.sensitivity='normal' "

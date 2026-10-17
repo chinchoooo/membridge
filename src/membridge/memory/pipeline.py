@@ -35,6 +35,7 @@ class ExtractionStats:
     secrets_dropped: int = 0
     entities_merged: int = 0
     ppr_cache: dict[str, Any] | None = None
+    truncated: bool = False  # stopped at max_messages; run again to continue (progress is saved)
     by_category: dict[str, int] = field(default_factory=dict)
 
 
@@ -48,9 +49,10 @@ def _known_entities(store: Store) -> set[str]:
 
 
 def run_extraction(
-    store: Store, *, limit_conversations: int | None = None, embedder: Any = None
+    store: Store, *, limit_conversations: int | None = None, embedder: Any = None, max_messages: int | None = None
 ) -> ExtractionStats:
-    """Process user messages not yet seen by this extractor version (safe to re-run)."""
+    """Process user messages not yet seen by this extractor version (safe to re-run). `max_messages` bounds one call
+    (an MCP request must not hold the service lock for an hour); the rest is picked up by the next call."""
     st = ExtractionStats()
     known = _known_entities(store)
     convs = store.conn.execute(
@@ -71,6 +73,9 @@ def run_extraction(
             ).fetchone():
                 st.messages_skipped_done += 1
                 continue
+            if max_messages is not None and st.messages_scanned >= max_messages:
+                st.truncated = True
+                break
             st.messages_scanned += 1
             cands, dropped = extract_from_message(
                 r["text"],
@@ -104,6 +109,8 @@ def run_extraction(
                 "INSERT OR IGNORE INTO extraction_state(message_id, extractor, processed_at) VALUES (?,?,?)",
                 (r["id"], EXTRACTOR_VERSION, time.time()),
             )
+        if st.truncated:
+            break
         if n_conv % 25 == 24:  # batch commits: one fsync per 25 conversations (state rows share the transaction, so resume stays exact)
             store.conn.commit()
     store.conn.commit()

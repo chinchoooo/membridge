@@ -95,13 +95,27 @@ def get_passphrase(env_name: str | None = None, *, confirm: bool = False) -> str
 
 
 def lock_database(db_path: Path, passphrase: str) -> Path:
-    """Encrypt the database file at rest and remove the plaintext (only after the encrypted copy verifies)."""
+    """Encrypt the database file at rest and remove the plaintext (only after the encrypted copy verifies).
+
+    Refuses while any other process has the database open: deleting a file under a running server loses its writes
+    (POSIX) or fails half way (Windows)."""
     import sqlite3
     import tempfile
 
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    conn.close()
+    from .store.openlock import held_by_anyone
+
+    if held_by_anyone(db_path):
+        raise CryptoError(
+            "the database is open in another process (the dashboard, an MCP server, or another command). "
+            "Stop it first, then lock; nothing was changed."
+        )
+    conn = sqlite3.connect(db_path, timeout=2)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.OperationalError as e:
+        raise CryptoError("the database is busy (another process is writing to it); nothing was changed") from e
+    finally:
+        conn.close()
     enc = db_path.with_suffix(db_path.suffix + ".enc")
     encrypt_file(db_path, enc, passphrase)
     with tempfile.TemporaryDirectory() as td:  # verify the round trip before destroying the plaintext
@@ -109,9 +123,39 @@ def lock_database(db_path: Path, passphrase: str) -> Path:
         if probe.stat().st_size != db_path.stat().st_size:
             enc.unlink(missing_ok=True)
             raise CryptoError("verification failed; plaintext kept")
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(db_path) + suffix).unlink(missing_ok=True)
+    try:
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(db_path) + suffix).unlink(missing_ok=True)
+    except PermissionError as e:
+        enc.unlink(missing_ok=True)  # keep exactly one authoritative copy: the plaintext that is still in use
+        raise CryptoError("could not remove the plaintext (a process still has it open); the encrypted copy was discarded") from e
     return enc
+
+
+def plaintext_artifacts(data_dir: Path) -> list[Path]:
+    """Files beside the database that hold readable memories: exports, backups, LLM dry-run payloads, import manifests,
+    and pre-restore copies. Locking the database does nothing for these."""
+    found: list[Path] = []
+    for sub, pattern in (("exports", "*"), ("backups", "*.db"), ("llm-dryrun", "*"), ("imports", "*")):
+        d = data_dir / sub
+        if d.is_dir():
+            found += [p for p in d.glob(pattern) if p.is_file() and p.suffix != ".enc"]
+    found += [p for p in data_dir.glob("*.pre-restore-*.db") if p.is_file()]
+    return sorted(found)
+
+
+def protect_artifacts(data_dir: Path, passphrase: str) -> dict[str, int]:
+    """Encrypt plaintext backups (kept, as .enc) and delete the re-creatable rest (exports, dry-run payloads, manifests)."""
+    encrypted = deleted = 0
+    for p in plaintext_artifacts(data_dir):
+        if p.parent.name == "backups" or ".pre-restore-" in p.name:
+            encrypt_file(p, p.with_name(p.name + ".enc"), passphrase)
+            p.unlink()
+            encrypted += 1
+        else:
+            p.unlink()
+            deleted += 1
+    return {"encrypted": encrypted, "deleted": deleted}
 
 
 def unlock_database(db_path: Path, passphrase: str) -> Path:

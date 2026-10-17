@@ -48,10 +48,14 @@ def build_ppr_cache(store: Store, *, k: int = 64, eps: float = 1e-3, alpha: floa
     """(Re)build every entity's vector. Loads and computes on a private read-only connection (readers are not blocked)
     and only takes the store lock for the final bulk write."""
     t0 = time.perf_counter()
-    gen = store.generation()
-    ro = sqlite3.connect(f"file:{store.path}?mode=ro", uri=True)
+    ro = sqlite3.connect(f"file:{store.path}?mode=ro", uri=True, timeout=30)
     ro.row_factory = sqlite3.Row
     try:
+        # One read transaction: the generation stamped on the cache is the generation of the data it was built from. Reading
+        # it on the shared connection could include another thread's uncommitted bump and mark a stale cache as fresh.
+        ro.execute("BEGIN")
+        row = ro.execute("SELECT v FROM meta WHERE k='gen'").fetchone()
+        gen = int(row[0]) if row else 0
         g = load_all(ro)
         ents = [r[0] for r in ro.execute("SELECT id FROM live_entities")]
     finally:

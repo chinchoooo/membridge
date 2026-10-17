@@ -15,10 +15,10 @@ COPY src ./src
 RUN uv sync --frozen --no-dev
 COPY --from=web /web/dist ./web/dist
 # The CLI refuses non-loopback binds unless it knows it is inside a container; compose publishes the port on 127.0.0.1 only.
-ENV MEMBRIDGE_IN_CONTAINER=1 MEMBRIDGE_DATA_DIR=/data MEMBRIDGE_FALKOR_HOST=falkordb MEMBRIDGE_FALKOR_PORT=6379
+ENV MEMBRIDGE_IN_CONTAINER=1 MEMBRIDGE_DATA_DIR=/data MEMBRIDGE_FALKOR_HOST=falkordb MEMBRIDGE_FALKOR_PORT=6379 MEMBRIDGE_ALLOW_REMOTE_GRAPH=1
 RUN useradd --create-home app && mkdir /data && chown app /data
 USER app
 VOLUME /data
 EXPOSE 8787
-HEALTHCHECK --interval=15s --timeout=5s --start-period=20s CMD ["/app/.venv/bin/python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=4)"]
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s CMD ["/app/.venv/bin/python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8787/api/ping', timeout=4)"]
 CMD ["/app/.venv/bin/membridge", "serve", "--host", "0.0.0.0", "--port", "8787"]

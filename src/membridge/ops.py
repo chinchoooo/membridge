@@ -12,6 +12,7 @@ from typing import Any
 import psutil
 
 from .config import Settings
+from .memory.models import redact_secrets, sensitivity_of
 from .store.graph import GraphStore
 from .store.sqlite import Store
 
@@ -36,13 +37,18 @@ def export_memory(
         "memories": mems,
         "evidence": [dict(r) for r in c.execute("SELECT * FROM memory_evidence") if r["memory_id"] in ids],
         "links": [dict(r) for r in c.execute("SELECT * FROM memory_links") if r["src_id"] in ids and r["dst_id"] in ids],
-        "entities": [dict(r) for r in c.execute("SELECT * FROM entities")],
         "memory_entities": [dict(r) for r in c.execute("SELECT * FROM memory_entities") if r["memory_id"] in ids],
-        "summaries": [dict(r) for r in c.execute("SELECT * FROM summaries")],
     }
+    linked = {r["entity_id"] for r in data["memory_entities"]}
+    # an entity is exported only if an exported memory points at it: "Zoloft" must not leave via the entity list
+    data["entities"] = [dict(r) for r in c.execute("SELECT * FROM entities") if include_sensitive or r["id"] in linked]
+    data["summaries"] = [dict(r) for r in c.execute("SELECT * FROM summaries") if include_sensitive or sensitivity_of(r["text"]) == "normal"]
     if include_raw:
-        data["conversations"] = [dict(r) for r in c.execute("SELECT * FROM conversations")]
-        data["messages"] = [dict(r) for r in c.execute("SELECT * FROM messages")]
+        data["conversations"] = [dict(r) for r in c.execute("SELECT * FROM conversations")
+                                 if include_sensitive or sensitivity_of(r["title"] or "") == "normal"]  # fmt: skip
+        msg_sens = "" if include_sensitive else " WHERE sensitivity='normal'"
+        data["messages"] = [{**dict(r), "text": redact_secrets(r["text"])} for r in c.execute(f"SELECT * FROM messages{msg_sens}")]
+        data["raw_text_credentials_redacted"] = True
     dest_dir.mkdir(parents=True, exist_ok=True)
     out = dest_dir / f"membridge-export-{_stamp()}.{'json' if fmt == 'json' else 'md'}"
     if fmt == "json":

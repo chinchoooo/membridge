@@ -38,7 +38,16 @@ def build_llm(s: Settings) -> GuardedLLM | None:
     if s.llm_provider == "none":
         return None
     if s.llm_provider == "ollama":
-        return GuardedLLM(OllamaLLM(s.llm_model, s.llm_base_url))
+        from urllib.parse import urlparse
+
+        host = (urlparse(s.llm_base_url).hostname or "").lower()
+        if host not in ("127.0.0.1", "localhost", "::1") and not s.allow_hosted:
+            raise LLMError(
+                f"llm_base_url points at {host or s.llm_base_url!r}, which is not this machine. The 'ollama' provider is "
+                "treated as local, so conversation text would leave it unredacted. Use a loopback URL, or set "
+                "MEMBRIDGE_ALLOW_HOSTED=true to opt in."
+            )
+        return GuardedLLM(OllamaLLM(s.llm_model, s.llm_base_url), redact_remote=s.redact_hosted)  # redacts iff the URL is remote
     if s.llm_provider == "openai_compat":
         if not s.allow_hosted:
             raise LLMError(

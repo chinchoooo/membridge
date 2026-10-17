@@ -159,3 +159,26 @@ def test_dry_run_writes_nothing(tmp_path: Path, store: Store) -> None:
     c = seed_from_text(store, f, dry_run=True)
     assert c["facts"] == 4 and c["changes"] == 3
     assert _rows(store, "SELECT COUNT(*) AS n FROM memories")[0]["n"] == 0
+
+
+def test_restructure_upgrades_older_plain_facts_and_finds_the_conflict(tmp_path: Path, store: Store) -> None:
+    from membridge.memory.consolidate import upsert as raw_upsert
+    from membridge.memory.models import Candidate
+    from membridge.memory.seed_text import restructure_existing
+
+    def plain(text: str, ts: float | None = None) -> None:  # how earlier imports stored facts: no subject/predicate/object
+        raw_upsert(store, Candidate(statement=text, category="profile", ref="d", ref_kind="document", origin="chatgpt_memory",
+                                    verification="provider_stated", ts=ts))  # fmt: skip
+
+    for t in ("Alex works at Acme Robotics.", "Alex works at Globex Labs.", "Alex studies at Northfield University.",
+              "Alex uses Python for data work.", "Alex uses Go for services."):  # fmt: skip
+        plain(t)
+    dry = restructure_existing(store, dry_run=True)
+    assert dry["structured"] >= 3 and store.conn.execute("SELECT COUNT(*) FROM memories WHERE predicate IS NOT NULL").fetchone()[0] == 0
+    out = restructure_existing(store)
+    assert out["structured"] >= 3 and out["conflicts_found"] >= 1
+    states = {r["statement"]: r["status"] for r in _rows(store, "SELECT statement, status FROM memories")}
+    assert states["Alex works at Acme Robotics."] == "unresolved" and states["Alex works at Globex Labs."] == "unresolved"  # undated + equal trust
+    assert states["Alex uses Python for data work."] == "current" and states["Alex uses Go for services."] == "current"  # many-valued
+    again = restructure_existing(store)
+    assert again["structured"] == 0 and again["conflicts_found"] == 0  # idempotent: nothing left to upgrade

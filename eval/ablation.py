@@ -28,13 +28,16 @@ from membridge.retrieval.engine import RetrievalConfig, Retriever, estimate_toke
 from membridge.store.graph import GraphStore  # noqa: E402
 from membridge.store.sqlite import Store  # noqa: E402
 
+# Rows A-F isolate RANKING, so the evidence gate (abstention) is off for them: a baseline that is allowed to answer
+# "I don't know" would be scored on a different task. Row G is the production system, gate on.
 VARIANTS: list[tuple[str, dict[str, Any]]] = [
-    ("A  bm25 only (facts + messages)", dict(use_entities=False, use_ppr=False, fusion="rrf", use_mmr=False, use_knapsack=False)),
-    ("B  + entity/hop channels, sum fusion", dict(use_entities=True, use_ppr=False, fusion="sum", use_mmr=False, use_knapsack=False)),
-    ("C  + personalized PageRank (sum)", dict(use_entities=True, use_ppr=True, fusion="sum", use_mmr=False, use_knapsack=False)),
-    ("D  RRF fusion instead of sum", dict(use_entities=True, use_ppr=True, fusion="rrf", use_mmr=False, use_knapsack=False)),
-    ("E  + MMR diversity", dict(use_entities=True, use_ppr=True, fusion="rrf", use_mmr=True, use_knapsack=False)),
-    ("F  + knapsack packing (full)", dict(use_entities=True, use_ppr=True, fusion="rrf", use_mmr=True, use_knapsack=True)),
+    ("A  bm25 only (facts + messages)", dict(use_entities=False, use_ppr=False, fusion="rrf", use_mmr=False, use_knapsack=False, abstain=False)),
+    ("B  + entity/hop channels, sum fusion", dict(use_entities=True, use_ppr=False, fusion="sum", use_mmr=False, use_knapsack=False, abstain=False)),
+    ("C  + personalized PageRank (sum)", dict(use_entities=True, use_ppr=True, fusion="sum", use_mmr=False, use_knapsack=False, abstain=False)),
+    ("D  RRF fusion instead of sum", dict(use_entities=True, use_ppr=True, fusion="rrf", use_mmr=False, use_knapsack=False, abstain=False)),
+    ("E  + MMR diversity", dict(use_entities=True, use_ppr=True, fusion="rrf", use_mmr=True, use_knapsack=False, abstain=False)),
+    ("F  + knapsack packing (ranking only)", dict(use_entities=True, use_ppr=True, fusion="rrf", use_mmr=True, use_knapsack=True, abstain=False)),
+    ("G  + evidence gate (production)", dict(use_entities=True, use_ppr=True, fusion="rrf", use_mmr=True, use_knapsack=True, abstain=True)),
 ]
 K = 5
 

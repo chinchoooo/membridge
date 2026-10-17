@@ -28,6 +28,10 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:${MEMBRIDGE_APP_PORT:-8787}:8787"
+    environment:
+      # The dashboard needs an access token. Set it in your shell or a .env beside this file: it is not generated here
+      # because nothing in a container log should be the only copy of a credential.
+      MEMBRIDGE_DASHBOARD_TOKEN: ${MEMBRIDGE_DASHBOARD_TOKEN:?set MEMBRIDGE_DASHBOARD_TOKEN to a long random string}
     volumes:
       - membridge-data:/data
     restart: unless-stopped

@@ -93,6 +93,16 @@ def seed(
     store.close()
 
 
+@app.command("restructure")
+def restructure(dry_run: Annotated[bool, typer.Option(help="Count only; change nothing")] = False) -> None:
+    """Give plain facts imported earlier from a ChatGPT dump their structured triple, so contradictions between them can be found."""
+    from .memory.seed_text import restructure_existing
+
+    store = Store(Settings().db_path)
+    typer.echo(json.dumps(restructure_existing(store, dry_run=dry_run)))
+    store.close()
+
+
 @app.command("seed-text")
 def seed_text(
     dump: Annotated[Path, typer.Argument(help="ChatGPT data-portability dump (see docs/CHATGPT_DUMP_PROMPT.md)")],
@@ -398,17 +408,28 @@ def export(
 
 
 @app.command()
-def lock(passphrase_env: Annotated[str | None, typer.Option(help="NAME of an env var holding the passphrase")] = None) -> None:
+def lock(
+    passphrase_env: Annotated[str | None, typer.Option(help="NAME of an env var holding the passphrase")] = None,
+    protect_artifacts: Annotated[bool, typer.Option("--protect-artifacts", help="Also encrypt backups and delete exports/dry-run payloads/manifests")] = False,
+) -> None:
     """Encrypt the database at rest (membridge.db -> membridge.db.enc) and remove the plaintext. Unlock before use."""
-    from .crypto import CryptoError, get_passphrase, lock_database
+    from .crypto import CryptoError, get_passphrase, lock_database, plaintext_artifacts
+    from .crypto import protect_artifacts as do_protect
 
     s = Settings()
     try:
-        enc = lock_database(s.db_path, get_passphrase(passphrase_env, confirm=passphrase_env is None))
+        pw = get_passphrase(passphrase_env, confirm=passphrase_env is None)
+        enc = lock_database(s.db_path, pw)
+        extra = do_protect(s.data_dir, pw) if protect_artifacts else None
     except (CryptoError, FileNotFoundError) as e:
         typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(2) from e
-    typer.echo(f"locked: {enc}  (stop the dashboard/MCP server first; run `membridge unlock` before using MemBridge again)")
+    typer.echo(f"locked: {enc}  (run `membridge unlock` before using MemBridge again)")
+    if extra is not None:
+        typer.echo(f"artifacts: {json.dumps(extra)}")
+    elif left := plaintext_artifacts(s.data_dir):
+        typer.secho(f"{len(left)} readable file(s) remain beside the vault (exports, backups, payloads). "
+                    "Run `membridge lock --protect-artifacts` to encrypt or remove them.", fg=typer.colors.YELLOW, err=True)
 
 
 @app.command()

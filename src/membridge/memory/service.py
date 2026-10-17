@@ -89,6 +89,8 @@ class MemoryService:
         embedder: Any = None, human: bool = False,
     ) -> None:  # fmt: skip
         self.store, self.graph, self.actor, self.embedder, self.human = store, graph, actor, embedder, human
+        self._last_derived = 0.0
+        self._derived_timer: Any = None
         if embedder is not None and cfg is None:
             cfg = RetrievalConfig(use_vector=True)
         self.retriever = Retriever(store, graph, cfg, embedder)
@@ -145,11 +147,31 @@ class MemoryService:
         except Exception:  # store closed or busy: the next write reschedules
             pass
 
-    def _sync_graph(self, only: set[str] | None = None) -> bool:
-        """Best effort; SQLite stays authoritative. `only` = memory ids that changed (incremental sync)."""
+    def _rebuild_derived(self) -> None:
         from ..resolve.relations import rebuild_entity_edges
 
-        rebuild_entity_edges(self.store)
+        with self.store.lock:
+            try:
+                rebuild_entity_edges(self.store)
+            except Exception:  # store closed: the next write rebuilds
+                return
+            self._last_derived = time.monotonic()
+
+    def _sync_graph(self, only: set[str] | None = None) -> bool:
+        """Best effort; SQLite stays authoritative. `only` = memory ids that changed (incremental sync).
+
+        Entity edges are derived from all memories, so recomputing them per write is O(everything). The first write
+        rebuilds at once; a burst (a session summary with twenty decisions) is coalesced into one rebuild just after it."""
+        if time.monotonic() - self._last_derived >= 2.0:
+            self._rebuild_derived()
+        else:
+            import threading
+
+            if self._derived_timer is not None:
+                self._derived_timer.cancel()
+            self._derived_timer = threading.Timer(2.0, self._rebuild_derived)
+            self._derived_timer.daemon = True
+            self._derived_timer.start()
         self._schedule_ppr()
         if self.graph is not None and self.graph.available():
             try:
@@ -431,7 +453,8 @@ class MemoryService:
             sensitivity=sensitivity_of(text), origin="client", ts=time.time()))  # fmt: skip
         self.store.audit(client, "record_decision", out.memory_id)
         self.store.conn.commit()
-        refresh_summaries(self.store)
+        pid = {r[0] for r in self.store.conn.execute("SELECT id FROM live_entities WHERE canonical=?", (pc,))}
+        refresh_summaries(self.store, only_projects=pid)  # this project's summary, not every conversation's
         sup = [r[0] for r in self.store.conn.execute("SELECT dst_id FROM memory_links WHERE src_id=? AND rel='SUPERSEDES'", (out.memory_id,))]
         self._sync_graph({out.memory_id, *sup})
         row = self.store.conn.execute("SELECT status FROM memories WHERE id=?", (out.memory_id,)).fetchone()
@@ -602,7 +625,7 @@ class MemoryService:
 
         out: dict[str, Any] = {}
         if scope == "incremental":
-            st = run_extraction(self.store)
+            st = run_extraction(self.store, max_messages=None if self.human else 3000)
             out["extraction"] = {k: v for k, v in st.__dict__.items()}
         elif scope == "summaries":
             out["summaries_changed"] = refresh_summaries(self.store)

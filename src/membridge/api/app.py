@@ -147,7 +147,7 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
                 r.set_cookie(COOKIE, access_token, httponly=True, samesite="strict", path="/")
                 return r
             return JSONResponse({"error": "wrong token"}, status_code=401)
-        if request.url.path.startswith("/api/") and not authorised(request):
+        if request.url.path.startswith("/api/") and request.url.path != "/api/ping" and not authorised(request):
             return JSONResponse({"error": "unauthorised: open the link printed by `membridge serve`"}, status_code=401)
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and MUTATING_HEADER not in request.headers:
             return JSONResponse({"error": f"missing {MUTATING_HEADER} header"}, status_code=403)
@@ -158,6 +158,10 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
         return JSONResponse({"error": str(e)}, status_code=400)
 
     # ---- overview / health -------------------------------------------------------
+    @app.get("/api/ping")
+    def api_ping() -> dict[str, bool]:  # liveness only (container healthcheck): reveals nothing about the data
+        return {"ok": True}
+
     @app.get("/api/health")
     def api_health() -> dict[str, Any]:
         return health(s)
