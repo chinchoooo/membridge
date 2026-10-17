@@ -39,7 +39,7 @@ class OpenMarker:
                     self.offset = random.randrange(0, WINDOW)
                     os.lseek(self.fd, self.offset, os.SEEK_SET)
                     try:
-                        msvcrt.locking(self.fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+                        msvcrt.locking(self.fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined,unused-ignore]
                         return
                     except OSError:
                         continue
@@ -67,7 +67,7 @@ class OpenMarker:
                 import msvcrt
 
                 os.lseek(self.fd, self.offset, os.SEEK_SET)
-                msvcrt.locking(self.fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+                msvcrt.locking(self.fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined,unused-ignore]
         except OSError:
             pass
         self._close()
@@ -88,11 +88,11 @@ def held_by_anyone(db_path: Path) -> bool:
 
             os.lseek(fd, 0, os.SEEK_SET)
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, WINDOW)  # type: ignore[attr-defined]
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, WINDOW)  # type: ignore[attr-defined,unused-ignore]
             except OSError:
                 return True
             os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, WINDOW)  # type: ignore[attr-defined]
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, WINDOW)  # type: ignore[attr-defined,unused-ignore]
             return False
         import fcntl
 

@@ -683,6 +683,23 @@ class MemoryService:
         return self._notice({"contradictions": [dict(r) for r in rows]}, self.human)
 
     # ---- consent for private memories (the user only) -----------------------------------------------------------
+    def set_private(self, memory_id: str, private: bool = True, reason: str = "marked by the user") -> dict[str, Any]:
+        """Mark a memory private (hidden from every assistant unless granted) or public again. The privacy lexicon is
+        lexical and will miss unusual phrasing; this is how the person corrects it."""
+        self._require_human("Changing whether a memory is private")
+        row = self.store.conn.execute("SELECT id, sensitivity FROM memories WHERE id=? AND status!='deleted'", (memory_id,)).fetchone()
+        if row is None:
+            raise ServiceError(f"no memory with id {memory_id}")
+        want = "sensitive" if private else "normal"
+        if row["sensitivity"] != want:
+            revision(self.store, memory_id, self.actor, reason)
+            self.store.conn.execute("UPDATE memories SET sensitivity=?, updated_at=? WHERE id=?", (want, time.time(), memory_id))
+            self.store.audit_sync(self.actor, "set_private" if private else "set_public", memory_id)
+            refresh_summaries(self.store)  # a summary that quoted it is rewritten without it
+            self.store.conn.commit()
+            self._sync_graph({memory_id})
+        return {"memory_id": memory_id, "private": private}
+
     def set_pin(self, new_pin: str, old_pin: str | None = None) -> dict[str, Any]:
         self._require_human("Setting the PIN")
         try:

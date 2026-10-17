@@ -16,6 +16,9 @@ It uses a synthetic archive (`samples/`), a throw-away data dir (`.membridge-dem
 
 Tips: record at 1280×800 in dark mode; run the demo once beforehand so Docker images are warm.
 
+## Dashboard access
+`membridge serve` prints a link with this launch's access token. Open that exact link once (it sets an HttpOnly cookie); a bare `http://127.0.0.1:8787` shows nothing and the API answers 401.
+
 ## Limitations to state on camera
 Rule extraction is conservative (low recall on casual chat); LLM extraction runs locally and is slow; benchmark numbers are from
 synthetic data; Cursor/VS Code/opencode/ChatGPT connectors are provided but unverified; data is not encrypted at rest.

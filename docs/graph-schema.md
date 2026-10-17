@@ -37,6 +37,11 @@ below is executed against a live graph by `tests/test_docs_cypher.py`, so this f
 when we learned it was *never* true (a correction). Changing a decision sets `invalid_at`; correcting a mistake also sets
 `expired_at`. Nothing is deleted, so "what was true then" and "what did we believe then" are both answerable.
 
+## What is *not* projected
+Private memories (`sensitivity != 'normal'`) never reach FalkorDB: no node, no edge, no message snippet. The graph database is a
+convenience copy for exploration; the authoritative store, with consent rules, is SQLite. Facts with no source date carry
+`valid_time_known = 0` in SQLite and never count as newer than a dated fact when a conflict is decided.
+
 ## Example queries
 
 Current facts about a project, strongest first:

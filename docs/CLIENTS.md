@@ -3,7 +3,8 @@
 MemBridge exposes the same store to any MCP client. **MCP cannot capture a client's conversations by itself**: memories
 are saved only when the client calls `record_decision`, `save_memory` or `commit_session_summary` (or you import an export).
 
-Set `MEMBRIDGE_CLIENT_NAME` so the audit log shows who did what. Generate ready-to-paste configs with the dashboard
+Set `MEMBRIDGE_CLIENT_NAME` so the audit log shows who did what; it is also the name a private-memory grant is bound to
+(`membridge grant-sensitive claude-code`). Generate ready-to-paste configs with the dashboard
 (Maintenance → Connect AI clients) or `GET /api/clients`.
 
 ## Verification status (honest)
@@ -32,8 +33,17 @@ requires `Authorization: Bearer <token>`. It refuses non-loopback binds by desig
 
 ## Tools
 
+**What an assistant may and may not do.** It can read, add (recorded as `client_asserted`, never as verified by you), link with
+`RELATED_TO`/`DEPENDS_ON`/`LEARNED_FROM`/`DERIVED_FROM`, and edit the text/category/confidence of a memory. It cannot change a memory's
+verification or status, create `SUPERSEDES`/`CONTRADICTS` links, settle contradictions, merge entities, or forget anything. `forget_memory`
+only files a request that you confirm yourself. Private memories (health, money, identity documents, family) are never in a result unless
+you granted this client access; every read tool accepts `include_sensitive`, honoured only while the grant is live, and every result carries
+one constant `sensitive_notice` so the answer cannot reveal whether something private exists. If `sufficient_evidence` is false the result
+contains no memories and no raw messages: say you have nothing.
+
 Retrieval: `search_memory`, `get_relevant_context`, `get_memory`, `get_related_memories`, `trace_memory_provenance`,
 `get_conversation`, `search_conversations`, `get_project_context`, `get_overview`, `list_projects`, `get_memory_statistics`,
 `list_unresolved_contradictions`. Filters: `category, status, project, since, until, as_of, known_at, verification`.
 Persistence: `save_memory`, `record_decision`, `commit_session_summary`, `update_memory`, `link_memories`.
-Maintenance: `run_consolidation`, `export_memory`, `forget_memory` (two-step).
+Maintenance: `run_consolidation` (bounded per call when an assistant triggers it), `export_memory` (never includes private memories),
+`forget_memory` (request only).

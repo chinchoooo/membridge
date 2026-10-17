@@ -103,6 +103,10 @@ class GrantIn(BaseModel):
     uses: int = Field(25, ge=1, le=200)
 
 
+class PrivateIn(BaseModel):
+    private: bool = True
+
+
 class RevokeIn(BaseModel):
     client: str | None = Field(None, max_length=80)
 
@@ -212,6 +216,10 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
     @app.patch("/api/memories/{memory_id}")
     def memory_patch(memory_id: str, body: MemoryPatch) -> dict[str, Any]:
         return svc.update_memory(memory_id, body.changes, body.reason, actor="dashboard")
+
+    @app.post("/api/memories/{memory_id}/private")
+    def memory_private(memory_id: str, body: PrivateIn) -> dict[str, Any]:
+        return svc.set_private(memory_id, body.private)
 
     @app.delete("/api/memories/{memory_id}")
     def memory_forget(memory_id: str, confirm_token: str | None = None) -> dict[str, Any]:

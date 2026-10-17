@@ -301,6 +301,16 @@ def grants() -> None:
     typer.echo(json.dumps({"pin_set": access.has_pin(store), "grants": access.list_grants(store)}, indent=2))
 
 
+@app.command("mark-private")
+def mark_private(
+    memory_id: str,
+    public: Annotated[bool, typer.Option("--public", help="Make it visible to assistants again")] = False,
+) -> None:
+    """Hide a memory from every assistant (or, with --public, show it again). The automatic detector can miss things."""
+    svc = _human_service(Settings())
+    typer.echo(json.dumps(svc.set_private(memory_id, not public)))
+
+
 @app.command("forget")
 def forget(memory_id: str, yes: Annotated[bool, typer.Option("--yes", help="Do not ask")] = False) -> None:
     """Permanently forget a memory (confirm here; an assistant can only request it)."""

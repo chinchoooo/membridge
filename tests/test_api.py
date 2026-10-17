@@ -179,3 +179,10 @@ def test_ping_is_the_only_unauthenticated_endpoint_and_says_nothing(client: Test
     r = anon.get("/api/ping")
     assert r.status_code == 200 and r.json() == {"ok": True}
     assert anon.get("/api/health").status_code == 401 and anon.get("/api/overview").status_code == 401
+
+
+def test_marking_a_memory_private_over_the_api(client: TestClient) -> None:
+    mid = client.post("/api/memories", json={"content": "My locker combination hint is blue", "category": "fact", "source": "user_stated"}, headers=H).json()["memory_id"]
+    assert any(i["id"] == mid for i in client.get("/api/memories", params={"limit": 200}).json()["items"])
+    assert client.post(f"/api/memories/{mid}/private", json={"private": True}, headers=H).json() == {"memory_id": mid, "private": True}
+    assert all(i["id"] != mid for i in client.get("/api/memories", params={"limit": 200}).json()["items"])

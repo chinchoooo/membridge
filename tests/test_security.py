@@ -322,3 +322,18 @@ def test_graph_projection_never_contains_private_memories(store: Store, world: d
     edges = graph.query("MATCH (a)-[r]->(b) RETURN a.id, b.id")
     assert not any(world["private"] in (e[0], e[1]) for e in edges)
     assert not any("anxiety" in str(r).lower() for r in graph.query("MATCH (g:Message) RETURN g.snippet"))
+
+
+def test_the_user_can_mark_a_memory_private_when_the_detector_missed_it(agent: MemoryService, me: MemoryService, store: Store, world: dict[str, str]) -> None:
+    mid = me.save_memory("My grandmother's maiden name is Okonkwo", "fact", "user_stated")["memory_id"]
+    assert agent.get_memory(mid)["statement"].startswith("My grandmother")  # the lexicon did not catch it
+    with pytest.raises(ServiceError, match="needs the user"):
+        agent.set_private(mid)
+    me.set_private(mid)
+    with pytest.raises(ServiceError, match="no memory with id"):
+        agent.get_memory(mid)
+    assert mid not in [m["id"] for m in agent.search_memory("grandmother maiden name Okonkwo")["memories"]]
+    assert "okonkwo" not in " ".join(r[0] for r in store.conn.execute("SELECT text FROM summaries")).lower()
+    me.set_private(mid, False)
+    assert agent.get_memory(mid)["statement"].startswith("My grandmother")
+    assert store.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action IN ('set_private','set_public')").fetchone()[0] == 2

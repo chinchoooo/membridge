@@ -45,7 +45,7 @@ def _filters(filters: dict[str, Any] | None, date_range: dict[str, Any] | None =
 
 
 def build_server(service: MemoryService, export_dir: Any, client: str = "mcp") -> MCPServer:
-    mcp = MCPServer("membridge", instructions=INSTRUCTIONS, version="0.1.0")
+    mcp = MCPServer("membridge", instructions=INSTRUCTIONS, version="0.2.0")
 
     # ---- retrieval -------------------------------------------------------------
     @mcp.tool(annotations=READ)

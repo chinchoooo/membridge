@@ -6,6 +6,7 @@ type Props = { selected: string | null; onSelect: (id: string | null) => void; o
 export const VERIF_LABEL: Record<string, string> = {
   user_stated: "user-stated",
   user_verified: "verified by you",
+  client_asserted: "added by an assistant for you",
   provider_stated: "from an AI provider's memory",
   model_inferred: "inferred by a model",
 };
@@ -15,13 +16,14 @@ export default function Memories({ selected, onSelect, onGraph }: Props) {
   const [category, setCategory] = useState("");
   const [status, setStatus] = useState("");
   const [verification, setVerification] = useState("");
+  const [showPrivate, setShowPrivate] = useState(false);
   const [list, setList] = useState<Rec | null>(null);
   const [err, setErr] = useState("");
 
   const load = useCallback(() => {
-    const p = new URLSearchParams({ q, category, status, verification, limit: "100" });
+    const p = new URLSearchParams({ q, category, status, verification, limit: "100", show_private: String(showPrivate) });
     api("/api/memories?" + p).then((d) => { setList(d); setErr(""); }).catch((e) => setErr(String(e.message)));
-  }, [q, category, status, verification]);
+  }, [q, category, status, verification, showPrivate]);
   useEffect(() => {
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
@@ -44,6 +46,9 @@ export default function Memories({ selected, onSelect, onGraph }: Props) {
             <option value="">any verification</option>
             {Object.keys(VERIF_LABEL).map((c) => <option key={c} value={c}>{VERIF_LABEL[c]}</option>)}
           </select>
+          <label title="Private memories (health, money, family...) are hidden from assistants and from this list unless you ask">
+            <input type="checkbox" checked={showPrivate} onChange={() => setShowPrivate(!showPrivate)} /> show private
+          </label>
         </div>
         {err && <p className="error">{err}</p>}
         <p className="muted">{list ? `${list.total} memories` : "Loading…"}</p>
@@ -118,7 +123,7 @@ function Detail({ id, onChanged, onGraph, onSelect }: { id: string; onChanged: (
         <span className="badge">confidence {m.confidence}</span>
         <span className="badge">mentioned {m.mention_count}×</span>
         <span className="badge">{m.extraction_method}</span>
-        {m.sensitivity !== "normal" && <span className="badge superseded">{m.sensitivity}</span>}
+        {m.sensitivity !== "normal" && <span className="badge superseded" title="Hidden from assistants unless you grant access">private</span>}
       </div>
       <table className="kv">
         <tbody>
@@ -137,6 +142,9 @@ function Detail({ id, onChanged, onGraph, onSelect }: { id: string; onChanged: (
             Mark verified
           </button>
         )}
+        <button title="Private memories are hidden from every assistant unless you grant access" onClick={() => api(`/api/memories/${id}/private`, { method: "POST", body: { private: m.sensitivity === "normal" } }).then(() => { load(); onChanged(); })}>
+          {m.sensitivity === "normal" ? "Mark private" : "Make visible to assistants"}
+        </button>
         <button className="danger" onClick={() => api(`/api/memories/${id}`, { method: "DELETE" }).then(setToken)}>Delete…</button>
       </div>
       {token && (

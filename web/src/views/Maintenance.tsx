@@ -18,10 +18,78 @@ export default function Maintenance({ onOpenMemory }: Props) {
       <Consolidate />
       <EntityReview />
       <Contradictions onOpenMemory={onOpenMemory} />
+      <PrivateAccess onOpenMemory={onOpenMemory} />
       <ExportBackup />
       <Clients />
       <Health />
     </div>
+  );
+}
+
+function PrivateAccess({ onOpenMemory }: Props) {
+  const [st, reload] = useLoad("/api/private/status");
+  const [fr, reloadFr] = useLoad("/api/forget-requests");
+  const [oldPin, setOldPin] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [pin, setPin] = useState("");
+  const [client, setClient] = useState("claude-code");
+  const [minutes, setMinutes] = useState(10);
+  const [uses, setUses] = useState(25);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const done = (ok: string) => () => { setMsg(ok); setErr(""); setPin(""); setOldPin(""); setNewPin(""); reload(); reloadFr(); };
+  const fail = (e: Error) => { setErr(e.message); setMsg(""); };
+  return (
+    <section>
+      <h3>Private memories</h3>
+      <p className="muted">
+        Health, money, identity-document and family facts are hidden from every assistant. To let one assistant read them for a few minutes, set a PIN once, then grant it.
+        The PIN is stored hashed and never shown to an assistant.
+      </p>
+      <div className="filters">
+        <b>{st?.pin_set ? "PIN is set" : "No PIN yet"}</b>
+        {st?.pin_set && <input type="password" placeholder="current PIN" value={oldPin} onChange={(e) => setOldPin(e.target.value)} />}
+        <input type="password" placeholder="new PIN (6+ characters)" value={newPin} onChange={(e) => setNewPin(e.target.value)} />
+        <button disabled={newPin.length < 6} onClick={() => api("/api/private/pin", { method: "POST", body: { new_pin: newPin, old_pin: oldPin || null } }).then(done("PIN saved")).catch(fail)}>
+          {st?.pin_set ? "Change PIN" : "Set PIN"}
+        </button>
+      </div>
+      <div className="filters">
+        <input placeholder="client name" value={client} onChange={(e) => setClient(e.target.value)} title="the MEMBRIDGE_CLIENT_NAME the assistant connects with" />
+        <input type="number" min={1} max={120} style={{ width: 90 }} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} title="minutes" />
+        <input type="number" min={1} max={200} style={{ width: 90 }} value={uses} onChange={(e) => setUses(Number(e.target.value))} title="private reads allowed" />
+        <input type="password" placeholder="PIN" value={pin} onChange={(e) => setPin(e.target.value)} />
+        <button disabled={!st?.pin_set || !pin || !client.trim()} onClick={() => api("/api/private/grant", { method: "POST", body: { pin, client: client.trim(), minutes, uses } }).then(done("Access granted")).catch(fail)}>
+          Grant access
+        </button>
+        <button onClick={() => api("/api/private/revoke", { method: "POST", body: {} }).then(done("All access revoked")).catch(fail)}>Revoke all</button>
+      </div>
+      {msg && <p className="muted">{msg}</p>}
+      {err && <p className="error">{err}</p>}
+      {(st?.grants?.length ?? 0) > 0 && st && (
+        <table className="kv">
+          <tbody>
+            {st.grants.slice(0, 8).map((g: Rec) => (
+              <tr key={g.id}>
+                <td>{g.client}</td>
+                <td>{g.active ? `active · ${g.uses_left} reads left · until ${new Date(g.expires_at * 1000).toLocaleTimeString()}` : g.revoked ? "revoked" : "ended"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {(fr?.requests?.length ?? 0) > 0 && fr && (
+        <div className="confirm">
+          <b>An assistant asked to forget:</b>
+          {fr.requests.map((r: Rec) => (
+            <p key={r.id}>
+              “{String(r.statement).slice(0, 120)}” <button onClick={() => onOpenMemory(r.id)}>Review</button>
+            </p>
+          ))}
+          <p className="muted">Open the memory and choose Delete… to confirm; nothing is forgotten until you do.</p>
+        </div>
+      )}
+    </section>
   );
 }
 

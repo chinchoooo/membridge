@@ -18,7 +18,11 @@ Status: implemented and measured. Numbers refer to `docs/EVAL.md`. Spec: `MEMBRI
 | MCP | Official `mcp` SDK 2.x (`MCPServer`), stdio primary, loopback HTTP + bearer token optional. Two-step destructive ops, tool annotations, audit identity. | FastMCP standalone (extra dependency, no need). |
 | UI | FastAPI + React/TypeScript/Vite; Cytoscape lazy-loaded; localhost-hardened. | A hosted dashboard (violates local-first). |
 | Speed | Content-generation counter maintained by SQL triggers (any process invalidates) → result cache; warm in-memory index; **precomputed per-entity PPR vectors summed at query time (PPR is linear in its seeds)** with live fallback; IDF-pruned FTS; numpy knapsack; no writes on the read path. Measured: 2.5 ms cold / 21 µs repeat on the real archive. | A separate cache server or vector DB (a process boundary costs more than the work); precomputing per-query results (unbounded key space). |
-| Packaging | Modular monolith (`uv` Python package); `docker compose` runs FalkorDB. | Microservices/broker/k8s (no demonstrated need). |
+| Packaging | Modular monolith (`uv` Python package); `docker compose` runs FalkorDB, optionally the app. | Microservices/broker/k8s (no demonstrated need). |
+| Who vouches | **Trust order** `user_verified > user_stated > client_asserted > provider_stated > model_inferred` decides conflicts before time does; undated claims are never "newer"; equal-trust undated clashes become *unresolved* and the person's decision is remembered. Agents cannot mint the top two tiers. | "Newest wins" (a summary with no date overruled things the user dated); first-writer-wins verification (a fact the user later states stayed `provider_stated`). |
+| Private data | One rule, applied by **construction**: the default search index, PageRank graph/cache, derived edges, summaries, graph projection, embeddings and exports simply contain no private memory; a separate uncached view exists only under a grant. Raw messages are classified too. | A filter at the end of each query path (the review found eight ways around it). |
+| Consent | PIN (scrypt, rate-limited) typed at a hidden prompt/dashboard creates a **short, client-bound, use-counted grant**; every private access is audited synchronously; audit rows are hash-chained. | Letting an agent pass a flag or a token typed in chat (it would pass through the model and could be replayed); a bearer secret the agent can read from its own environment. |
+| Answer or abstain | A memory is returned only with **per-item support for this query**: lexical (IDF-weighted, must contain the most informative term), entity-anchored, message-anchored (a near-unique token or two rare words), or vector. Structured memories carry the words their predicate answers (company/city/tools). | A score threshold on a self-normalised score (it could never fail: asking for a pizza topping returned "favourite editor"). |
 
 ## Data flow
 `export zip` → streaming adapter (ChatGPT/Claude) → raw archive (SQLite) → rules (+ optional LLM) → consolidation (dedup, supersede/correct,
@@ -34,5 +38,6 @@ FalkorDB down → identical answers via SQLite loader (tested), slower graph fea
 Bad records → reported, never fatal. Wrong merge → undo (`entity-review`). Wrong fact → edit/forget; history preserved.
 
 ## Migration and deployment
-Schema versions 1–5 are additive and idempotent (`store/migrations.py`; tested on a copy of a real database). Backup/restore and
-export need no AI provider. `docker compose up -d` then `uv run membridge …`. No Dockerfile for the app itself (limitation).
+Schema versions 1–7 are additive and idempotent (`store/migrations.py`; migration 7 adds trust/time flags, raw-text sensitivity, grants, the PIN
+store and the audit hash chain, and re-classifies existing data, only ever upgrading to private). Backup/restore and export need no AI provider.
+`docker compose up -d` then `uv run membridge …`; `docker compose --profile app up -d` runs the dashboard (token required).
