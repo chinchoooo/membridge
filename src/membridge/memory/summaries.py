@@ -36,12 +36,13 @@ def refresh_summaries(store: Store) -> dict[str, int]:
         "SELECT id, title, message_count FROM conversations"
     ).fetchall():
         first = c.execute(
-            "SELECT text FROM messages WHERE conversation_id=? AND role='user' AND text!='' ORDER BY seq LIMIT 1",
+            "SELECT text FROM messages WHERE conversation_id=? AND role='user' AND text!='' AND sensitivity='normal' ORDER BY seq LIMIT 1",
             (conv["id"],),
         ).fetchone()
         mems = c.execute(
             "SELECT DISTINCT m.id, m.statement, m.updated_at FROM memories m JOIN memory_evidence e ON e.memory_id=m.id "
-            "JOIN messages g ON g.id=e.ref WHERE g.conversation_id=? AND m.status!='deleted' ORDER BY m.score DESC LIMIT 5",
+            "JOIN messages g ON g.id=e.ref WHERE g.conversation_id=? AND m.status!='deleted' AND m.sensitivity='normal' "
+            "ORDER BY m.score DESC LIMIT 5",
             (conv["id"],),
         ).fetchall()
         sh = sha(
@@ -60,7 +61,7 @@ def refresh_summaries(store: Store) -> dict[str, int]:
     for e in c.execute("SELECT id, name FROM live_entities WHERE type='project'").fetchall():
         mems = c.execute(
             "SELECT DISTINCT m.id, m.statement, m.status, m.category, m.updated_at FROM memories m "
-            "JOIN memory_entities me ON me.memory_id=m.id WHERE me.entity_id=? AND m.status!='deleted' "
+            "JOIN memory_entities me ON me.memory_id=m.id WHERE me.entity_id=? AND m.status!='deleted' AND m.sensitivity='normal' "
             "ORDER BY m.status='current' DESC, m.score DESC",
             (e["id"],),
         ).fetchall()

@@ -23,8 +23,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ..llm.base import LLM, LLMError
 from ..store.sqlite import Store
-from .consolidate import _link, _supersede, rescore, revision, upsert
-from .models import CATEGORIES, Candidate, EntityRef, canonical, contains_secret, sensitivity_of, sha
+from .consolidate import _link, _outrank, _supersede, _unresolved, rescore, revision, upsert
+from .models import CATEGORIES, Candidate, EntityRef, canonical, contains_secret, sensitivity_of, sha, trust_rank
 
 EXTRACTOR_PREFIX = "llm-1"
 WINDOW_CHARS = 1600  # prompt budget per call; smaller windows keep CPU-only models responsive
@@ -180,6 +180,29 @@ def extract_with_llm(
     return st
 
 
+_NEGATION = re.compile(r"\b(?:not|never|no longer|cannot|hate|hates|dislike|dislikes|avoid|avoids|stopped)\b|n't\b", re.IGNORECASE)
+_FILLER = {"the", "and", "for", "that", "this", "with", "user", "users", "uses", "into", "from", "are", "was", "has", "have", "their"}
+
+
+def _content_stems(text: str) -> set[str]:
+    out = set()
+    for w in re.findall(r"[a-z0-9+#]{3,}", text.lower()):
+        for suf in ("ing", "es", "ed", "s"):
+            if len(w) > 4 and w.endswith(suf):
+                w = w[: -len(suf)]
+                break
+        if w not in _FILLER:
+            out.add(w)
+    return out
+
+
+def entailed_by(statement: str, quote: str) -> float:
+    """Fraction of the statement's content words that the quote actually contains. A real quote ("I don't like Java")
+    can still be attached to a statement it does not support ("User likes Java"); the quote guard alone misses that."""
+    st = _content_stems(statement)
+    return len(st & _content_stems(quote)) / len(st) if st else 0.0
+
+
 def _store_candidate(store: Store, m: _Mem, win: list[Any], model: str, st: LLMExtractStats) -> None:
     if m.category not in CATEGORIES or contains_secret(m.statement) or contains_secret(m.quote):
         st.rejected_other += 1
@@ -193,7 +216,11 @@ def _store_candidate(store: Store, m: _Mem, win: list[Any], model: str, st: LLME
     if src is None:  # provenance guard: a quote the user never wrote is a hallucination or an injection artefact
         st.rejected_quote += 1
         return
-    explicit = m.explicit
+    overlap = entailed_by(m.statement, m.quote)
+    if overlap < 0.5 or bool(_NEGATION.search(m.statement)) != bool(_NEGATION.search(m.quote)):
+        st.rejected_quote += 1  # the quote is real but does not say this (or says the opposite)
+        return
+    explicit = m.explicit and overlap >= 0.8  # 'the user stated it' needs the quote to carry nearly all of the statement
     ents = [EntityRef(e.name, e.type) for e in m.entities if canonical(e.name)]
     subject = canonical(m.subject) if m.subject else None
     out = upsert(store, Candidate(
@@ -236,6 +263,7 @@ def classify_conflicts(store: Store, llm: LLM, *, max_pairs: int = 40) -> Classi
         "JOIN memory_entities x ON x.memory_id=a.id JOIN memory_entities y ON y.memory_id=b.id AND y.entity_id=x.entity_id "
         "WHERE a.status IN ('current','unresolved') AND b.status IN ('current','unresolved') "
         "AND a.category IN ('decision','preference','constraint','project') AND a.verification!='provider_stated' "
+        "AND a.sensitivity='normal' AND b.sensitivity='normal' "  # private text never goes to a model for this
         "AND NOT EXISTS (SELECT 1 FROM memory_links l WHERE (l.src_id=a.id AND l.dst_id=b.id) OR (l.src_id=b.id AND l.dst_id=a.id)) "
         "GROUP BY a.id, b.id LIMIT ?",
         (max_pairs,),
@@ -252,6 +280,17 @@ def classify_conflicts(store: Store, llm: LLM, *, max_pairs: int = 40) -> Classi
             st.errors += 1
             continue
         st.applied[rel.relation] = st.applied.get(rel.relation, 0) + 1
+        if trust_rank(a["verification"]) != trust_rank(b["verification"]) and rel.relation in (
+            "changed_preference", "correction", "incompatible"
+        ):
+            # A model may not overrule who vouches for a statement: the more trusted one stands, unless the less
+            # trusted is a connected agent's newer claim, which is the user's call.
+            hi, lo = (a, b) if trust_rank(a["verification"]) > trust_rank(b["verification"]) else (b, a)
+            if lo["verification"] == "client_asserted" and (lo["valid_at"] or 0) > (hi["valid_at"] or 0):
+                _unresolved(store, lo["id"], hi["id"], "llm_newer_agent_claim_vs_more_trusted")
+            else:
+                _outrank(store, hi["id"], lo["id"], f"llm:{rel.relation}:trust")
+            continue
         older, newer = (a, b) if (a["valid_from"] or 0) <= (b["valid_from"] or 0) else (b, a)
         if rel.newer in ("a", "b"):
             newer, older = (a, b) if rel.newer == "a" else (b, a)

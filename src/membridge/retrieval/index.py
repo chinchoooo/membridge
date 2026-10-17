@@ -22,6 +22,7 @@ def canon(text: str) -> str:
 @dataclass
 class WarmIndex:
     gen: int
+    full: bool = False  # True only for the grant-authorised view that includes sensitive memories
     built_ms: float = 0.0
     facts: dict[str, dict[str, Any]] = field(default_factory=dict)
     phrases: dict[str, list[tuple[str, str, float]]] = field(default_factory=dict)  # phrase -> [(entity_id, name, strength)]
@@ -48,11 +49,14 @@ class WarmIndex:
         return hits
 
 
-def build_index(store: Store) -> WarmIndex:
+def build_index(store: Store, include_sensitive: bool = False) -> WarmIndex:
+    """The default view contains no sensitive memory at all, so nothing downstream (entity lists, PPR seeds, supersede
+    chains, evidence maps) can rank by, count, or even label one."""
     t0 = time.perf_counter()
     c = store.conn
-    ix = WarmIndex(gen=store.generation())
-    ix.facts = {r["id"]: dict(r) for r in c.execute("SELECT * FROM memories WHERE status!='deleted'")}
+    ix = WarmIndex(gen=store.generation(), full=include_sensitive)
+    sens = "" if include_sensitive else " AND sensitivity='normal'"
+    ix.facts = {r["id"]: dict(r) for r in c.execute(f"SELECT * FROM memories WHERE status!='deleted'{sens}")}
     names: dict[str, str] = {}
     for r in c.execute("SELECT id, name, canonical FROM live_entities"):
         names[r["id"]] = r["name"]
@@ -88,10 +92,11 @@ def build_index(store: Store) -> WarmIndex:
         ix.conv_projects.setdefault(r["cid"], []).append(r["eid"])
     ix.conv_title = {r["id"]: r["title"] or "" for r in c.execute("SELECT id, title FROM conversations")}
     for r in c.execute("SELECT ref, memory_id FROM memory_evidence"):
-        ix.ref_facts.setdefault(r["ref"], []).append(r["memory_id"])
+        if r["memory_id"] in ix.facts:
+            ix.ref_facts.setdefault(r["ref"], []).append(r["memory_id"])
     for r in c.execute(
-        "SELECT l.dst_id AS dst, l.src_id AS src, m.status AS st FROM memory_links l JOIN memories m ON m.id=l.src_id "
-        "WHERE l.rel='SUPERSEDES' AND m.status!='deleted' ORDER BY l.created_at DESC"
+        f"SELECT l.dst_id AS dst, l.src_id AS src, m.status AS st FROM memory_links l JOIN memories m ON m.id=l.src_id "
+        f"WHERE l.rel='SUPERSEDES' AND m.status!='deleted'{sens.replace('sensitivity', 'm.sensitivity')} ORDER BY l.created_at DESC"
     ):
         ix.superseders.setdefault(r["dst"], []).append((r["src"], r["st"]))
     ix.built_ms = round((time.perf_counter() - t0) * 1000, 2)

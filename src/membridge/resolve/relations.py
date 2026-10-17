@@ -30,7 +30,7 @@ def rebuild_entity_edges(store: Store) -> dict[str, int]:
     rows = c.execute(
         "SELECT id, subject_entity_id AS s, object_entity_id AS o, predicate, confidence, status, "
         "IFNULL(valid_at, valid_from) AS v, invalid_at AS iv FROM memories "
-        "WHERE status!='deleted' AND subject_entity_id IS NOT NULL AND object_entity_id IS NOT NULL "
+        "WHERE status!='deleted' AND sensitivity='normal' AND subject_entity_id IS NOT NULL AND object_entity_id IS NOT NULL "
         "AND subject_entity_id != object_entity_id"
     ).fetchall()
     n = 0
@@ -46,7 +46,7 @@ def rebuild_entity_edges(store: Store) -> dict[str, int]:
         n += cur.rowcount
     c.execute("DELETE FROM entity_cooccurrence")
     c.execute(
-        "INSERT INTO entity_cooccurrence(a_entity, b_entity, weight) SELECT a.entity_id, b.entity_id, COUNT(*) FROM memory_entities a JOIN memory_entities b ON a.memory_id=b.memory_id AND a.entity_id<b.entity_id JOIN memories m ON m.id=a.memory_id JOIN live_entities ea ON ea.id=a.entity_id JOIN live_entities eb ON eb.id=b.entity_id WHERE m.status!='deleted' GROUP BY a.entity_id, b.entity_id"
+        "INSERT INTO entity_cooccurrence(a_entity, b_entity, weight) SELECT a.entity_id, b.entity_id, COUNT(*) FROM memory_entities a JOIN memory_entities b ON a.memory_id=b.memory_id AND a.entity_id<b.entity_id JOIN memories m ON m.id=a.memory_id JOIN live_entities ea ON ea.id=a.entity_id JOIN live_entities eb ON eb.id=b.entity_id WHERE m.status!='deleted' AND m.sensitivity='normal' GROUP BY a.entity_id, b.entity_id"
     )
     c.commit()
     return {"edges": n}

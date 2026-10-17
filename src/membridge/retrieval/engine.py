@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 import sqlite3
 import time
@@ -26,7 +27,7 @@ from typing import Any
 from ..graphalgo.adjacency import Graph, load_from_sqlite
 from ..graphalgo.ppr import PPRResult, personalized_pagerank
 from ..graphalgo.ppr_cache import cached_ppr
-from ..memory.models import canonical
+from ..memory.models import canonical, redact_secrets
 from ..store.graph import GraphStore, fulltext_query
 from ..store.sqlite import Store
 from .fusion import mmr, rrf, token_jaccard, weighted_sum
@@ -64,6 +65,40 @@ class RetrievalConfig:
     vector_backend: str = "sqlite"  # sqlite (default, deterministic) | graph (FalkorDB vector index)
 
 
+# What a structured memory is *about*, in the words people use when they ask for it. "Which city do I live in?" has no
+# word in common with "I live in Lisbon" except "live"; the predicate says it answers a question about a city.
+_SLOT_WORDS = {
+    "work_at": "work job employer company workplace employed career",
+    "study_at": "study school university college education student",
+    "live_at": "live city home location reside residence based town country",
+    "am_based_at": "live city home location based town country",
+    "name_is": "name called",
+    "editor_is": "editor ide favourite favorite best like prefer",
+    "ide_is": "editor ide favourite favorite best like prefer",
+    "os_is": "operating system os favourite favorite",
+    "degree_is": "degree major studied qualification",
+    "major_is": "degree major studied qualification",
+    "university_is": "university college school study",
+    "college_is": "university college school study",
+    "company_is": "company employer work job",
+    "employer_is": "company employer work job",
+    "prefers": "prefer like favourite favorite best",
+    "avoids": "avoid dislike hate",
+    "uses_tool": "use tool tools stack tech technology language programming framework library",
+    "studies": "learn learning study studying course topic interest",
+    "deadline": "deadline due date when",
+    "is_project": "project building build app application product",
+    "uses": "use using choose chose decided decision stack technology",
+    "decided": "decide decision decided choose",
+}  # fmt: skip
+_CATEGORY_WORDS = {
+    "skill": "skill language programming framework technology tool tools",
+    "interest": "interest learning topic hobby",
+    "project": "project app application",
+    "education": "education school study",
+}
+
+
 def estimate_tokens(text: str) -> int:
     """Rough estimate (~4 chars/token). Documented as an estimate; no tokenizer dependency."""
     return max(1, len(text) // 4)
@@ -72,7 +107,11 @@ def estimate_tokens(text: str) -> int:
 _STOP = set(
     "the a an and or of to in on for with what which who whom is are was were do does did i my me we our about have has had how "
     "when where why that this these those it its be been from at by as can could should would will tell show give find any all "
-    "previously before earlier ago".split()
+    "previously before earlier ago after during while until since between over under than then also only just really very "
+    "much many some other another each every more most less least get got make made go went going give gave take took "
+    "thing things stuff something anything everything someone anyone into onto upon out off up down again still yet "
+    "ever never always often sometimes there here let lets please now currently current latest today nowadays originally "
+    "initially formerly old former recent recently".split()
 )
 
 
@@ -128,6 +167,8 @@ class Retriever:
         self.store, self.graph, self.cfg, self.embedder = store, graph, cfg or RetrievalConfig(), embedder
         self.actor = "retriever"
         self._index: WarmIndex | None = None
+        self._index_full: WarmIndex | None = None  # the grant-authorised view that includes sensitive memories
+        self._full = False  # set per search() call; the service serialises calls, so this is not shared state
         self._gen_pin: int | None = None  # generation read once per search instead of ~10 times
         self._df: dict[tuple[str, str], int] = {}
         self._df_gen = -1
@@ -137,11 +178,17 @@ class Retriever:
         self.cache_size = 256
 
     def _ix(self) -> WarmIndex:
-        """The warm index for the current content generation (rebuilt lazily after any write, by any process)."""
+        """The warm index for the current content generation (rebuilt lazily after any write, by any process).
+        The default index holds no sensitive memory at all; the full one exists only for a grant-authorised call."""
         g = self._gen_pin if self._gen_pin is not None else self.store.generation()
-        if self._index is None or self._index.gen != g:
-            self._index = build_index(self.store)
-        return self._index
+        cur = self._index_full if self._full else self._index
+        if cur is None or cur.gen != g:
+            cur = build_index(self.store, include_sensitive=self._full)
+            if self._full:
+                self._index_full = cur
+            else:
+                self._index = cur
+        return cur
 
     def _fts_terms(self, table: str, terms: list[str]) -> list[str]:
         """IDF pruning for OR full-text queries. Terms present in a huge share of documents ("use", "now") barely move
@@ -241,10 +288,11 @@ class Retriever:
         if not terms:
             return []
         try:
+            sens = "" if self._full else " AND m.sensitivity='normal'"
             return self.store.conn.execute(
                 "SELECT m.id, m.conversation_id, m.role, m.create_time, m.text, c.title FROM messages_fts f "
                 "JOIN messages m ON m.id=f.message_id JOIN conversations c ON c.id=m.conversation_id "
-                "WHERE messages_fts MATCH ? ORDER BY bm25(messages_fts) LIMIT ?",
+                f"WHERE messages_fts MATCH ?{sens} ORDER BY bm25(messages_fts) LIMIT ?",
                 (_match_expr(terms), limit),
             ).fetchall()
         except sqlite3.OperationalError:
@@ -277,20 +325,20 @@ class Retriever:
 
     # ---- channel: PPR ----------------------------------------------------------
     def _ppr(self, seeds: dict[str, float], depth: int, use_graph: bool) -> tuple[PPRResult, Graph, int]:
-        if self.cfg.use_ppr_cache:
+        if self.cfg.use_ppr_cache and not self._full:
             ix = self._ix()
             res = cached_ppr(self.store, seeds, ix.fact_entities, ix.degree, self.cfg.ppr_alpha)
             if res is not None:
                 return res, Graph(), 0
         hops = max(1, min(depth, 3))
         g: Graph | None = None
-        if use_graph and self.graph is not None:
+        if use_graph and self.graph is not None and not self._full:  # FalkorDB never holds private memories
             try:
                 g = self.graph.adjacency(list(seeds), hops=hops, cap=self.cfg.ppr_cap)
             except Exception:
                 g = None  # graph hiccup: same algorithm on the SQLite loader
         if g is None:
-            g = load_from_sqlite(self.store, list(seeds), hops=hops, cap=self.cfg.ppr_cap)
+            g = load_from_sqlite(self.store, list(seeds), hops=hops, cap=self.cfg.ppr_cap, include_sensitive=self._full)
         res = personalized_pagerank(g, seeds, alpha=self.cfg.ppr_alpha, eps=self.cfg.ppr_eps, hub_beta=self.cfg.hub_beta)
         return res, g, len(g.nodes())
 
@@ -345,9 +393,21 @@ class Retriever:
         filters: dict[str, Any] | None = None,
         token_budget: int | None = None,
         depth: int | None = None,
+        full: bool = False,
     ) -> dict[str, Any]:
-        """Cached front door. The key includes the content generation, so any write (by any process) invalidates it."""
+        """Cached front door. The key includes the content generation, so any write (by any process) invalidates it.
+        `full=True` is the grant-authorised view that may contain sensitive memories; it is never cached."""
         t0 = time.perf_counter()
+        self._full = bool(full or self.cfg.include_sensitive)
+        if self._full:
+            self._gen_pin = self.store.generation()
+            try:
+                pkg = self._search(query, limit=limit, filters=filters, token_budget=token_budget, depth=depth)
+            finally:
+                self._gen_pin = None
+                self._full = False
+            pkg["stats"]["cache"] = "bypass(sensitive)"
+            return pkg
         key = (
             " ".join(query.lower().split()), limit, token_budget, depth, json.dumps(filters or {}, sort_keys=True, default=str),
             repr(self.cfg), self.graph is not None, getattr(self.embedder, "name", None), self.store.generation(),
@@ -503,7 +563,8 @@ class Retriever:
                 why.append("graph path: " + path)
             items.append({
                 "id": mid, "statement": r["statement"], "category": r["category"], "status": r["status"],
-                "verification": r["verification"], "confidence": r["confidence"], "kind": r["kind"],
+                "verification": r["verification"], "origin": r["origin"], "extraction_method": r["extraction_method"],
+                "confidence": r["confidence"], "kind": r["kind"],
                 "valid_from": r["valid_from"], "valid_to": r["valid_to"], "valid_at": r["valid_at"], "invalid_at": r["invalid_at"],
                 "recorded_at": r["recorded_at"], "expired_at": r["expired_at"], "mentions": r["mention_count"],
                 "score": round(final.get(mid, 0.0), 3), "channels": hit_by.get(mid, []), "why_selected": why, "evidence": ev_full,
@@ -511,12 +572,19 @@ class Retriever:
                 "_path": path,
             })  # fmt: skip
 
+        # Evidence gate: a memory is only returned if something about THIS query supports it. Ranking alone cannot
+        # decide that (the best of a bad lot always ranks first), so the support is measured, item by item.
+        support = self._support(qterms, items, ents, vec_hits, msg_hits)
+        items = [it for it in items if it["id"] in support]
+        for it in items:
+            it["why_selected"].append("support:" + support[it["id"]])
+
         # exact context packing; evidence may be shortened before a whole memory is dropped
         exact: list[dict[str, Any]] = []
-        for mh in msg_hits[:3]:
+        for mh in msg_hits[:3] if items else []:  # raw messages only accompany an answer; they are never the answer to "no"
             exact.append({
                 "message_id": mh["id"], "conversation_id": mh["conversation_id"], "conversation": mh["title"], "role": mh["role"],
-                "ts": mh["create_time"], "snippet": _snippet(mh["text"], query), "untrusted": True,
+                "ts": mh["create_time"], "snippet": redact_secrets(_snippet(mh["text"], query)), "untrusted": True,
             })  # fmt: skip
         groups: list[list[Option]] = []
         for rank, it in enumerate(items):
@@ -560,21 +628,16 @@ class Retriever:
             community_summaries, used = self._community_context(query, budget, used)
         paths = [it["_path"] for it in items if it.get("_path") and any(o["id"] == it["id"] for o in out_items)]
 
-        top = out_items[0] if out_items else None
-        # calibrated: enough score AND corroboration (several channels, an exact text match, or a named entity)
-        sufficient = top is not None and top["score"] >= cfg.min_top_score and (
-            len(top["channels"]) >= 2 or "bm25_fact" in top["channels"] or "vector" in top["channels"] or bool(ents)
-        )
-        sufficient = sufficient or bool(community_summaries)
+        sufficient = bool(out_items) or bool(community_summaries)
         pkg = {
             "query": query,
             "sufficient_evidence": sufficient,
             "note": None if sufficient else "No stored memory matches this query with enough support; nothing was inferred.",
-            "memories": out_items if sufficient else [],
-            "source_messages": kept_exact,
+            "memories": out_items,
+            "source_messages": kept_exact if sufficient else [],
             "community_summaries": community_summaries,
-            "graph_paths": paths[:15],
-            "matched_entities": [n for n, _ in ents.values()],
+            "graph_paths": paths[:15] if sufficient else [],
+            "matched_entities": [n for n, _ in ents.values()] if sufficient else [],
             "stats": {
                 "mode": "graph" if use_graph else "sqlite-degraded",
                 "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
@@ -593,6 +656,123 @@ class Retriever:
         }  # fmt: skip
         self.store.audit_read(self.actor, "search", None, q_len=len(query), results=len(out_items))
         return pkg
+
+    # ---- evidence gate -------------------------------------------------------------------
+    def _term_df(self, term: str, table: str = "memories") -> int:
+        """In how many (visible) memories / messages does this term occur? Cached per content generation."""
+        gen = self._gen_pin if self._gen_pin is not None else self.store.generation()
+        if gen != self._df_gen:
+            self._df.clear()
+            self._fts_n.clear()
+            self._df_gen = gen
+        key = (f"{table}-{'full' if self._full else 'vis'}", term)
+        if key not in self._df:
+            sens = "" if self._full else " AND m.sensitivity='normal'"
+            if table == "memories":
+                sql = ("SELECT COUNT(*) FROM memories_fts f JOIN memories m ON m.id=f.memory_id "
+                       f"WHERE memories_fts MATCH ? AND m.status!='deleted'{sens}")
+            else:
+                sql = f"SELECT COUNT(*) FROM messages_fts f JOIN messages m ON m.id=f.message_id WHERE messages_fts MATCH ?{sens}"
+            try:
+                self._df[key] = int(self.store.conn.execute(sql, ('"' + term.replace('"', '""') + '"',)).fetchone()[0])
+            except sqlite3.OperationalError:
+                self._df[key] = 0
+        return self._df[key]
+
+    def _n_docs(self, table: str) -> int:
+        if table == "memories":
+            return max(1, len(self._ix().facts))
+        key = f"messages-n-{'full' if self._full else 'vis'}"
+        if key not in self._fts_n:
+            sens = "" if self._full else " WHERE sensitivity='normal'"
+            self._fts_n[key] = max(1, int(self.store.conn.execute(f"SELECT COUNT(*) FROM messages{sens}").fetchone()[0]))
+        return self._fts_n[key]
+
+    def _idf(self, term: str, n: int, table: str = "memories") -> float:
+        return max(0.1, math.log((n + 1) / (self._term_df(term, table) + 0.5)))
+
+    def _item_words(self, mid: str, statement: str) -> set[str]:
+        ix = self._ix()
+        words = {_stem(w) for w in re.findall(r"[a-z0-9+#]{2,}", statement.lower())}
+        for e in ix.fact_entities.get(mid, ()):
+            words |= {_stem(w) for w in re.findall(r"[a-z0-9+#]{2,}", ix.ent_name.get(e, "").lower())}
+        f = ix.facts.get(mid)
+        if f is not None:
+            pred = str(f.get("predicate") or "").split(":")[0]
+            slot = _SLOT_WORDS.get(pred) or ("favourite favorite best like prefer " + pred.replace("_", " ") if pred.startswith("favo") else "")
+            extra = f"{slot} {_CATEGORY_WORDS.get(str(f.get('category')), '')}"
+            words |= {_stem(w) for w in extra.split()}
+        return words
+
+    def _support(
+        self, qterms: list[str], items: list[dict[str, Any]], ents: dict[str, tuple[str, float]],
+        vec_hits: list[tuple[str, float]], msg_hits: list[sqlite3.Row],
+    ) -> dict[str, str]:
+        """memory id -> the kind of support it has for this query. Nothing here looks at rank or the stored score.
+
+        lexical  the memory contains the query's most informative term AND at least half of the query's information
+                 (IDF-weighted, light stemming). "favourite pizza topping" vs "favourite editor is Vim" fails: the
+                 rare words are the question.
+        entity   the query names an entity and the memory is about it (the graph answers what words do not)
+        message  an archived message matches the query closely and this memory comes from that conversation (the
+                 multi-hop path message -> conversation -> project -> decision)
+        vector   the embedding similarity clears the floor
+        """
+        if not items:
+            return {}
+        ix = self._ix()
+        n = max(1, len(ix.facts))
+        terms = list(dict.fromkeys(qterms))
+        idf = {t: self._idf(t, n) for t in terms}
+        total = sum(idf.values()) or 1.0
+        focus = max(idf, key=lambda t: idf[t]) if idf else None
+        vec = dict(vec_hits)
+        strong = {e for e, (_, st) in ents.items() if st >= 0.9}
+        ent_pool = {m for e in strong for m in ix.entity_facts.get(e, ())}
+        ent_words: set[str] = set()  # words the entity link already explains ("Atlas" in "what does Atlas use")
+        for e in strong:
+            ent_words |= {_stem(w) for w in re.findall(r"[a-z0-9+#]{2,}", ix.ent_name.get(e, "").lower())}
+        rem = [t for t in terms if not _term_in(t, ent_words)]
+        rem_total = sum(idf[t] for t in rem) or 1.0
+        # a question about things we have never seen a word of ("pizza", "salary") must not be answered by whatever
+        # happens to be attached to the entity it also names
+        rem_known = not rem or sum(self._term_df(t) > 0 or self._term_df(t, "messages") > 0 for t in rem) / len(rem) >= 0.5
+        msg_cov = 0.0
+        if terms and msg_hits:
+            n_msg = self._n_docs("messages")
+            midf = {t: self._idf(t, n_msg, "messages") for t in terms}
+            mtotal = sum(midf.values()) or 1.0
+            for mh in msg_hits[:3]:
+                have = {_stem(w) for w in re.findall(r"[a-z0-9+#]{2,}", mh["text"].lower())}
+                hit_terms = [t for t in terms if _term_in(t, have)]
+                informative = sum(1 for t in hit_terms if self._term_df(t, "messages") <= max(8, 0.10 * n_msg))  # common words do not anchor
+                if informative >= 2 or (len(terms) == 1 and informative == 1):
+                    msg_cov = max(msg_cov, sum(midf[t] for t in hit_terms) / mtotal)
+        out: dict[str, str] = {}
+        for it in items:
+            mid = it["id"]
+            words = self._item_words(mid, it["statement"])
+            matched = [t for t in terms if _term_in(t, words)]
+            cov = sum(idf[t] for t in matched) / total if terms else 0.0
+            if terms and cov >= 0.5 and focus in matched:
+                out[mid] = f"lexical:{cov:.2f}"
+            elif mid in ent_pool and (
+                not rem
+                or sum(idf[t] for t in rem if t in matched) / rem_total >= 0.34
+                or (it["category"] in ("decision", "constraint", "project", "profile", "preference") and rem_known)
+            ):
+                out[mid] = f"entity:{cov:.2f}"
+            elif msg_cov >= 0.6 and any(ch in ("bm25_msg", "hop") for ch in it["channels"]):
+                out[mid] = f"message:{msg_cov:.2f}"
+            elif vec.get(mid, 0.0) >= self.cfg.vector_min_sim:
+                out[mid] = f"vector:{vec[mid]:.2f}"
+        # the current truth of a supported (now superseded) memory is supported too: that is what "what do I use now" asks
+        by_id = {it["id"]: it for it in items}
+        for mid in list(out):
+            y = self._current_superseder(mid)
+            if y is not None and y in by_id and y not in out:
+                out[y] = "supersession"
+        return out
 
     # ---- selection helpers -------------------------------------------------------------
     def _must_include(self, ents: dict[str, tuple[str, float]], rows: Mapping[str, Mapping[str, Any]], filters: dict[str, Any]) -> list[str]:
@@ -643,7 +823,7 @@ class Retriever:
             return [dict(x) for x in self._load_sql(ids, filters)]
         ix = self._ix()
         cfg = self.cfg
-        allow_sens = cfg.include_sensitive or bool(filters.get("include_sensitive"))
+        allow_sens = self._full
         eq = [(k, filters[k]) for k in ("category", "status", "origin", "verification") if filters.get(k)]
         since, until, as_of, known_at = filters.get("since"), filters.get("until"), filters.get("as_of"), filters.get("known_at")
         out: list[Mapping[str, Any]] = []
@@ -672,7 +852,7 @@ class Retriever:
             return []
         q = ",".join("?" * len(ids))
         sql, args = f"SELECT * FROM memories m WHERE id IN ({q}) AND status!='deleted'", list(ids)
-        if not self.cfg.include_sensitive and not filters.get("include_sensitive"):
+        if not self._full:
             sql += " AND sensitivity='normal'"
         if not self.cfg.include_history:
             sql += " AND status='current'"
@@ -715,14 +895,22 @@ class Retriever:
                 ).fetchone()
                 if m:
                     out.append({"kind": "message", "message_id": m["id"], "conversation_id": m["conversation_id"], "conversation": m["title"],
-                                "ts": m["create_time"], "snippet": (e["quote"] or "")[:240]})  # fmt: skip
+                                "ts": m["create_time"], "snippet": redact_secrets((e["quote"] or "")[:240])})  # fmt: skip
             else:
                 d = self.store.conn.execute("SELECT id, name, kind FROM documents WHERE id=?", (e["ref"],)).fetchone()
                 if d:
-                    out.append({"kind": "document", "document_id": d["id"], "source": f"{d['kind']}:{d['name']}", "snippet": (e["quote"] or "")[:240]})
+                    out.append({"kind": "document", "document_id": d["id"], "source": f"{d['kind']}:{d['name']}", "snippet": redact_secrets((e["quote"] or "")[:240])})
         ix.evidence[key] = out
         return out
 
+
+
+def _term_in(term: str, words: set[str]) -> bool:
+    """Does `term` (light-stemmed) occur among `words`? Prefix-compatible stems match: caching ~ cache."""
+    st = _stem(term)
+    if st in words:
+        return True
+    return len(st) >= 4 and any(len(h) >= 4 and (h.startswith(st) or st.startswith(h)) for h in words)
 
 
 def _public(it: dict[str, Any]) -> dict[str, Any]:

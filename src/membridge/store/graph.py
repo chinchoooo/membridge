@@ -113,6 +113,7 @@ class GraphStore:
             c.execute("DELETE FROM _sync_ids")
             c.executemany("INSERT OR IGNORE INTO _sync_ids(id) VALUES (?)", [(i,) for i in ids])
         flt = " AND m.id IN (SELECT id FROM _sync_ids)" if scoped else ""
+        vis = " AND m.sensitivity='normal'"  # private memories never leave SQLite: no node, no edge, no snippet in the graph
 
         def rows(sql: str, *args: Any) -> list[dict[str, Any]]:
             return [dict(r) for r in c.execute(sql, args).fetchall()]
@@ -141,7 +142,7 @@ class GraphStore:
             rows("SELECT e.id, e.name, e.type, e.canonical, IFNULL((SELECT group_concat(alias_norm,' ') FROM entity_aliases a "
                  "WHERE a.entity_id=e.id),'') AS aliases FROM live_entities e"), "entities",
         )  # fmt: skip
-        gone = [r["id"] for r in rows(f"SELECT m.id FROM memories m WHERE m.status='deleted'{flt}")]
+        gone = [r["id"] for r in rows(f"SELECT m.id FROM memories m WHERE (m.status='deleted' OR m.sensitivity!='normal'){flt}")]
         if gone:
             self.query("MATCH (m:Memory) WHERE m.id IN $ids DETACH DELETE m", {"ids": gone})
         run(
@@ -153,7 +154,7 @@ class GraphStore:
             rows("SELECT m.id, m.statement, m.category, m.kind, m.status, m.verification, m.confidence, m.score, m.importance, "
                  "m.activation, m.sensitivity, IFNULL(m.first_seen,0) AS first_seen, IFNULL(m.last_seen,0) AS last_seen, "
                  "m.mention_count, m.valid_at, m.invalid_at, m.recorded_at, m.expired_at "
-                 f"FROM memories m WHERE m.status!='deleted'{flt}"), "memories",
+                 f"FROM memories m WHERE m.status!='deleted'{vis}{flt}"), "memories",
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MERGE (v:Conversation {id:r.id}) SET v.title=r.title, v.ts=r.ts",
@@ -164,10 +165,10 @@ class GraphStore:
             "WITH g, r MATCH (v:Conversation {id:r.cid}) MERGE (g)-[:PART_OF]->(v)",
             rows("SELECT DISTINCT g.id, g.role, IFNULL(g.create_time,0) AS ts, SUBSTR(g.text,1,200) AS snippet, "
                  "g.conversation_id AS cid FROM messages g JOIN memory_evidence e ON e.ref=g.id "
-                 f"JOIN memories m ON m.id=e.memory_id WHERE m.status!='deleted'{flt}"), "messages",
+                 f"JOIN memories m ON m.id=e.memory_id WHERE m.status!='deleted'{vis}{flt}"), "messages",
         )  # fmt: skip
         run("UNWIND $rows AS r MERGE (s:Source {id:r.id}) SET s.name=r.name, s.kind=r.kind", rows("SELECT d.id, d.name, d.kind FROM documents d"))
-        live = f"m.status!='deleted'{flt}"
+        live = f"m.status!='deleted'{vis}{flt}"
         run(
             "UNWIND $rows AS r MATCH (m:Memory {id:r.m}), (e:Entity {id:r.e}) MERGE (m)-[x:ABOUT {role:r.role}]->(e)",
             rows("SELECT me.memory_id AS m, me.entity_id AS e, me.role AS role FROM memory_entities me "
@@ -185,7 +186,7 @@ class GraphStore:
                 f"UNWIND $rows AS r MATCH (a:Memory {{id:r.a}}), (b:Memory {{id:r.b}}) MERGE (a)-[x:{rel}]->(b) SET x.reason=r.reason",
                 rows("SELECT l.src_id AS a, l.dst_id AS b, IFNULL(l.reason,'') AS reason FROM memory_links l "
                      "JOIN memories a ON a.id=l.src_id JOIN memories b ON b.id=l.dst_id "
-                     f"WHERE l.rel=? AND a.status!='deleted' AND b.status!='deleted'{scope_links}", rel), "edges",
+                     f"WHERE l.rel=? AND a.status!='deleted' AND b.status!='deleted' AND a.sensitivity='normal' AND b.sensitivity='normal'{scope_links}", rel), "edges",
             )  # fmt: skip
         run(
             "UNWIND $rows AS r MATCH (e:Entity {id:r.e}), (v:Conversation {id:r.c}) MERGE (e)-[x:MENTIONED_IN]->(v) SET x.count=r.n",
@@ -207,11 +208,11 @@ class GraphStore:
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MATCH (u:User {id:'user'}), (m:Memory {id:r.m}) MERGE (u)-[x:DECIDED]->(m)",
-            rows(f"SELECT m.id AS m FROM memories m WHERE m.category='decision' AND m.status!='deleted'{flt}"), "edges",
+            rows(f"SELECT m.id AS m FROM memories m WHERE m.category='decision' AND m.status!='deleted'{vis}{flt}"), "edges",
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MATCH (u:User {id:'user'}), (m:Memory {id:r.m}) MERGE (u)-[x:PREFERS]->(m) SET x.polarity=r.p",
-            rows(f"SELECT m.id AS m, m.predicate AS p FROM memories m WHERE m.category='preference' AND m.status!='deleted'{flt}"), "edges",
+            rows(f"SELECT m.id AS m, m.predicate AS p FROM memories m WHERE m.category='preference' AND m.status!='deleted'{vis}{flt}"), "edges",
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MERGE (c:Community {id:r.id}) SET c.level=r.level, c.method=r.method, c.title=r.title",

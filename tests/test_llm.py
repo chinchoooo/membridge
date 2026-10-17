@@ -54,7 +54,8 @@ def test_llm_extraction_requires_verbatim_quotes_and_valid_schema(export_file: P
     st = extract_with_llm(store, llm)
     assert st.created == 1 and st.rejected_quote == 1 and st.rejected_other == 1
     row = store.conn.execute("SELECT * FROM memories WHERE extraction_method LIKE 'llm:%'").fetchone()
-    assert row["verification"] == "user_stated" and row["confidence"] <= 0.85
+    # the statement paraphrases and adds details ("Atlas", "called") its quote lacks: model_inferred, not user_stated
+    assert row["verification"] == "model_inferred" and row["confidence"] <= 0.85
     ev = store.conn.execute("SELECT ref, quote FROM memory_evidence WHERE memory_id=?", (row["id"],)).fetchone()
     assert ev["quote"] in store.get_message(ev["ref"])["text"]  # provenance resolves to the original words
     # untrusted content is fenced and the model is told it is data
@@ -280,3 +281,22 @@ def test_numbers_the_user_never_wrote_are_rejected(export_file: Path, store: Sto
 
     st = extract_with_llm(store, FakeLLM(handler))
     assert st.created == 1 and st.rejected_other == 1
+
+
+def test_quote_must_support_the_statement(export_file: Path, store: Store) -> None:
+    _imported(export_file, store)
+    quote = "a data pipeline for my sensor readings"
+
+    def handler(system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+        if "sensor readings" not in user:
+            return {"memories": []}
+        return {"memories": [
+            {"statement": "User is building a data pipeline for sensor readings", "category": "project", "explicit": True, "quote": quote},
+            {"statement": "User does not want a data pipeline for sensor readings", "category": "project", "explicit": True, "quote": quote},
+            {"statement": "User prefers Kubernetes on bare metal clusters", "category": "preference", "explicit": True, "quote": quote},
+        ]}
+
+    st = extract_with_llm(store, FakeLLM(handler))
+    assert st.created == 1 and st.rejected_quote == 2  # opposite meaning and unsupported claim are both refused
+    row = store.conn.execute("SELECT verification FROM memories WHERE extraction_method LIKE 'llm:%'").fetchone()
+    assert row["verification"] == "user_stated"  # near-verbatim: the quote carries the statement

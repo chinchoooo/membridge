@@ -59,17 +59,19 @@ def edge_weight(etype: str, *, role: str | None = None, count: int | None = None
 
 
 # ---- SQLite loader ------------------------------------------------------------------------------------
-def _sql_neighbors(store: Store, ids: list[str]) -> list[tuple[str, str, str, float]]:
+def _sql_neighbors(store: Store, ids: list[str], include_sensitive: bool = False) -> list[tuple[str, str, str, float]]:
     """All (a, b, etype, weight) edges touching `ids` (each pair appears from either side)."""
     if not ids:
         return []
     c = store.conn
+    sm = "" if include_sensitive else " AND m.sensitivity='normal'"
+    sa = "" if include_sensitive else " AND a.sensitivity='normal' AND b.sensitivity='normal'"
     q = ",".join("?" * len(ids))
     out: list[tuple[str, str, str, float]] = []
     for r in c.execute(
         f"SELECT me.memory_id AS m, me.entity_id AS e, me.role AS role FROM memory_entities me "
         f"JOIN memories m ON m.id=me.memory_id JOIN live_entities e ON e.id=me.entity_id "
-        f"WHERE m.status!='deleted' AND (me.memory_id IN ({q}) OR me.entity_id IN ({q}))",
+        f"WHERE m.status!='deleted'{sm} AND (me.memory_id IN ({q}) OR me.entity_id IN ({q}))",
         ids + ids,
     ):
         out.append((r["m"], r["e"], "ABOUT", edge_weight("ABOUT", role=r["role"])))
@@ -81,7 +83,7 @@ def _sql_neighbors(store: Store, ids: list[str]) -> list[tuple[str, str, str, fl
         out.append((r["e"], r["v"], "MENTIONED_IN", edge_weight("MENTIONED_IN", count=r["n"])))
     for r in c.execute(
         f"SELECT l.src_id AS a, l.dst_id AS b, l.rel AS rel FROM memory_links l JOIN memories a ON a.id=l.src_id "
-        f"JOIN memories b ON b.id=l.dst_id WHERE a.status!='deleted' AND b.status!='deleted' "
+        f"JOIN memories b ON b.id=l.dst_id WHERE a.status!='deleted' AND b.status!='deleted'{sa} "
         f"AND (l.src_id IN ({q}) OR l.dst_id IN ({q}))",
         ids + ids,
     ):
@@ -104,12 +106,12 @@ def _sql_neighbors(store: Store, ids: list[str]) -> list[tuple[str, str, str, fl
     return out
 
 
-def load_from_sqlite(store: Store, seeds: list[str], hops: int = 2, cap: int = 2000) -> Graph:
+def load_from_sqlite(store: Store, seeds: list[str], hops: int = 2, cap: int = 2000, include_sensitive: bool = False) -> Graph:
     g = Graph()
     frontier, visited = list(dict.fromkeys(seeds)), set(seeds)
     for _ in range(max(1, hops)):
         nxt: list[str] = []
-        for a, b, t, w in _sql_neighbors(store, frontier):
+        for a, b, t, w in _sql_neighbors(store, frontier, include_sensitive):
             g.add(a, b, t, w)
             for n in (a, b):
                 if n not in visited and len(visited) < cap:

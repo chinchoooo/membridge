@@ -54,13 +54,15 @@ _PREFER = re.compile(
     r"(?P<verb>prefer|like|love|enjoy|hate|dislike|avoid|can't stand)\s+(?P<obj>[^,.;:!?]+)",
     re.IGNORECASE,
 )
+# The words around a name are matched case-insensitively ("I am building Atlas." / "We are building Atlas."); the
+# name itself must still be capitalised.
 _PROJECT_NAMED = re.compile(
-    r"\b(?:project|app|tool|system|pipeline|platform|library|startup|product)\s+(?:called|named)\s+"
+    r"(?i:\b(?:project|app|tool|system|pipeline|platform|library|startup|product)\s+(?:called|named)\s+)"
     r"(?P<obj>[A-Z][\w.+#-]*(?:\s[A-Z][\w.+#-]*){0,3})"
 )
 _PROJECT_WORKING = re.compile(
-    rf"\b{_P}\s*(?:am\s+|are\s+)?(?:'m\s+|'re\s+)?"
-    r"(?:starting|building|working on|developing|creating|writing)\s+(?:a |an |the |my |our )?"
+    rf"(?i:\b{_P}\s*(?:am\s+|are\s+)?(?:'m\s+|'re\s+)?"
+    r"(?:starting|building|working on|developing|creating|writing)\s+(?:a |an |the |my |our )?)"
     r"(?P<obj>[A-Z][\w.+#-]*(?:\s[A-Z][\w.+#-]*){0,3})"
 )
 _DEADLINE = re.compile(
@@ -73,9 +75,13 @@ _PROFILE = re.compile(
     re.IGNORECASE,
 )
 _SKILL = re.compile(
-    r"\bi\s+(?:use|work with|know|code in|program in|write)\s+(?P<obj>[A-Z][\w.+#-]*(?:\s[A-Z][\w.+#-]*){0,2})"
-    r"\s+(?:for|to|at)\b",
+    r"(?i:\b(?:i|we)\s+(?:use|work with|know|code in|program in|write)\s+)(?P<obj>[A-Z][\w.+#-]*(?:\s[A-Z][\w.+#-]*){0,2})"
+    r"(?i:\s+(?:for|to|at)\b)",
 )  # fmt: skip
+_QUESTION_START = re.compile(
+    r"^\s*(?:how|what|why|when|where|which|who|can|could|should|would|do|does|did|is|are|will|may|please|explain|help|tell|show)\b",
+    re.IGNORECASE,
+)
 _CORRECTION = re.compile(r"^\s*(?:actually|correction|sorry|i meant|no,? wait|to correct)\b[:,]?\s", re.I)
 _USING = re.compile(
     r"\bi(?:'m| am)\s+(?:currently\s+|now\s+|also\s+)?(?P<verb>using|learning|studying)\s+"
@@ -106,7 +112,10 @@ def aspect_of(phrase: str | None, subject: str | None) -> str:
 def clean_object(text: str, max_words: int = 6) -> str | None:
     t = _ARTICLE.sub("", text.strip().strip("\"'`()[]")).rstrip(".,;:!?")
     t = re.sub(
-        r"\s+(?:because|since|but|and then|which|that)\b.*$", "", t, flags=re.IGNORECASE
+        r"\s+(?:because|since|but|and then|which|that|while|although|though)\b.*$|\s+and\s+(?:i|we|my|our|it|he|she|they)\b.*$",
+        "",
+        t,
+        flags=re.IGNORECASE,
     ).strip()
     words = t.split()
     if not words or len(words) > max_words or len(t) > 60:
@@ -114,8 +123,24 @@ def clean_object(text: str, max_words: int = 6) -> str | None:
     return t
 
 
-def sentences(text: str) -> Iterator[str]:
+_QUOTED_LINE = re.compile(r"^[ \t]*>.*$", re.MULTILINE)
+_PASTE_MARK = re.compile(
+    r"(?im)^[ \t]*(?:-{2,}\s*(?:original|forwarded) message\s*-{2,}|begin forwarded message:?|on .{5,120} wrote:|"
+    r"from:\s.+|sent:\s.+|subject:\s.+)[ \t]*$"
+)
+
+
+def strip_pasted(text: str) -> str:
+    """Drop what the user pasted rather than wrote: code fences, '>' quotes and everything under an email/forward
+    header. 'I decided to use evil-proxy.com' inside a forwarded email is not a decision of the user."""
     text = _CODE_FENCE.sub(" ", text)
+    text = _QUOTED_LINE.sub("", text)
+    m = _PASTE_MARK.search(text)
+    return text[: m.start()] if m else text
+
+
+def sentences(text: str) -> Iterator[str]:
+    text = strip_pasted(text)
     for s in _SENT_SPLIT.split(text):
         s = s.strip()
         if 12 <= len(s) <= 400:
@@ -236,7 +261,8 @@ def extract_from_message(
                 verb = m["verb"].lower()
                 out.append(mk("preference", subject="user", predicate="prefers" if verb in _POSITIVE else "avoids",
                               object=obj, entities=ents + [_entity(obj)], confidence=0.8))  # fmt: skip
-        if m := (_PROJECT_NAMED.search(sent) or _PROJECT_WORKING.search(sent)):
+        question = sent.rstrip().endswith("?") or bool(_QUESTION_START.match(sent))
+        if not question and (m := (_PROJECT_NAMED.search(sent) or _PROJECT_WORKING.search(sent))):
             obj = clean_object(m["obj"], 4)
             if obj and canonical(obj) not in _STOP_CAPS:
                 out.append(mk("project", subject=canonical(obj), predicate="is_project", object=obj,
@@ -278,7 +304,7 @@ def extract_from_message(
                                   entities=ents + [_entity(obj, "organisation")], confidence=0.8))  # fmt: skip
             if m := _NAME.search(sent):
                 out.append(mk("profile", subject="user", predicate="name_is", object=m["obj"].strip().rstrip("."), entities=[], confidence=0.9))
-        if m := _SKILL.search(sent):
+        if not question and (m := _SKILL.search(sent)):
             obj = clean_object(m["obj"], 3)
             if obj:
                 out.append(mk("skill", subject="user", predicate="uses_tool", object=obj,

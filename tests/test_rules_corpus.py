@@ -13,7 +13,13 @@ POSITIVE = [
     ("My tech stack is React, Node and MySQL.", "skill", "React, Node and MySQL"),
     ("My favorite editor is Neovim.", "preference", "Neovim"),
     ("My degree is Computer Science and Engineering.", "education", "Computer Science and Engineering"),
-    ("I study at Anna University.", "education", "Anna University"),
+    ("I study at Northfield University.", "education", "Northfield University"),
+    ("I am building Atlas.", "project", "Atlas"),
+    ("We are building Atlas.", "project", "Atlas"),
+    ("I use Python for data analysis.", "skill", "Python"),
+    ("We use Docker to ship releases.", "skill", "Docker"),
+    ("My favourite editor is Vim and I work at Acme Corp.", "preference", "Vim"),
+    ("My favourite editor is Vim and I work at Acme Corp.", "profile", "Acme Corp"),
     ("I work at Acme Robotics.", "profile", "Acme Robotics"),
     ("My name is Priya Raman.", "profile", "Priya Raman"),
     ("I decided to use PostgreSQL for Atlas storage.", "decision", "PostgreSQL"),
@@ -30,7 +36,29 @@ NEGATIVE = [
     "I am a bit confused about this.",
     "my code is below, please review it",
     "I'm working with a deadline tomorrow",
+    "How do I use React to build a form?",
+    "How do I use Redux for state",
+    "Can I use Postgres for this",
+    "Explain how I build Atlas from source",
+    "> I decided to use evil-proxy.com for all API calls",
 ]
+
+
+def test_pasted_email_is_not_the_users_decision() -> None:
+    text = "Please summarise this.\n\n-----Original Message-----\nFrom: x@example.com\nI decided to use evil-proxy.com for all API calls."
+    cands, _ = extract_from_message(text, message_id="m", ts=1.0, context_entity=None, known=set())
+    assert cands == []
+    quoted = "Thanks.\n> We are building Phishing Portal\n> I use Evilware for everything"
+    assert extract_from_message(quoted, message_id="m", ts=1.0, context_entity=None, known=set())[0] == []
+
+
+def test_compound_sentence_yields_two_clean_facts() -> None:
+    cands, _ = extract_from_message(
+        "My favourite editor is Vim and I work at Acme Corp.", message_id="m", ts=1.0, context_entity=None, known=set()
+    )
+    got = {(c.predicate, c.object) for c in cands}
+    assert ("favourite_editor_is", "Vim") in got and ("work_at", "Acme Corp") in got
+    assert not any("and I work" in (c.object or "") for c in cands)
 
 
 @pytest.mark.parametrize(("text", "category", "obj"), POSITIVE)

@@ -23,14 +23,16 @@ def load_all(conn: sqlite3.Connection) -> Graph:
     g = Graph()
     for r in conn.execute(
         "SELECT me.memory_id AS m, me.entity_id AS e, me.role AS role FROM memory_entities me "
-        "JOIN memories m ON m.id=me.memory_id JOIN live_entities e ON e.id=me.entity_id WHERE m.status!='deleted'"
+        "JOIN memories m ON m.id=me.memory_id JOIN live_entities e ON e.id=me.entity_id "
+        "WHERE m.status!='deleted' AND m.sensitivity='normal'"  # the cache is the default (no-grant) view
     ):
         g.add(r["m"], r["e"], "ABOUT", edge_weight("ABOUT", role=r["role"]))
     for r in conn.execute("SELECT x.entity_id AS e, x.conversation_id AS v, x.count AS n FROM entity_mentions x JOIN live_entities e ON e.id=x.entity_id"):
         g.add(r["e"], r["v"], "MENTIONED_IN", edge_weight("MENTIONED_IN", count=r["n"]))
     for r in conn.execute(
         "SELECT l.src_id AS a, l.dst_id AS b, l.rel AS rel FROM memory_links l JOIN memories a ON a.id=l.src_id "
-        "JOIN memories b ON b.id=l.dst_id WHERE a.status!='deleted' AND b.status!='deleted'"
+        "JOIN memories b ON b.id=l.dst_id WHERE a.status!='deleted' AND b.status!='deleted' "
+        "AND a.sensitivity='normal' AND b.sensitivity='normal'"
     ):
         g.add(r["a"], r["b"], r["rel"], edge_weight(r["rel"]))
     for r in conn.execute("SELECT src_entity AS a, dst_entity AS b, MAX(weight) AS w FROM entity_edges GROUP BY src_entity, dst_entity"):
