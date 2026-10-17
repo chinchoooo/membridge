@@ -192,15 +192,132 @@ def summarize_llm() -> None:
 
 
 @app.command("ask")
-def ask(query: str, budget: int = 1500, graph: bool = True) -> None:
+def ask(
+    query: str, budget: int = 1500, graph: bool = True,
+    private: Annotated[bool, typer.Option("--private", help="Include private memories (asks for your PIN at a hidden prompt)")] = False,
+) -> None:  # fmt: skip
     """Retrieve context for a question (what an AI client would get)."""
     from .retrieval.engine import Retriever
 
     settings = Settings()
     store = Store(settings.db_path)
+    if private:
+        _require_pin(store)
+        store.audit_sync("cli", "sensitive_access", "ask")
     g = _graph(settings) if graph else None
-    typer.echo(json.dumps(Retriever(store, g).search(query, token_budget=budget), indent=2, default=str))
+    typer.echo(json.dumps(Retriever(store, g).search(query, token_budget=budget, full=private), indent=2, default=str))
     store.close()
+
+
+def _require_pin(store: Store) -> None:
+    """Hidden prompt for the PIN. A program running this command without a terminal cannot answer it."""
+    import getpass
+
+    from .memory import access
+
+    if not access.has_pin(store):
+        typer.secho("No PIN is set yet: run `membridge set-pin` first.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2)
+    try:
+        ok = access.verify_pin(store, getpass.getpass("PIN: "))
+    except (access.AccessError, EOFError, OSError) as e:
+        typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2) from e
+    if not ok:
+        typer.secho("Wrong PIN.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2)
+
+
+def _human_service(settings: Settings):  # type: ignore[no-untyped-def]
+    from .memory.service import MemoryService
+
+    return MemoryService(Store(settings.db_path), _graph(settings), actor="cli", human=True)
+
+
+@app.command("set-pin")
+def set_pin() -> None:
+    """Set or change the PIN that guards private memories (health, money, family...). Typed at a hidden prompt."""
+    import getpass
+
+    from .memory import access
+
+    store = Store(Settings().db_path)
+    try:
+        old = getpass.getpass("Current PIN: ") if access.has_pin(store) else None
+        new = getpass.getpass("New PIN (6+ characters): ")
+        if getpass.getpass("Repeat PIN: ") != new:
+            raise access.AccessError("the PINs do not match")
+        access.set_pin(store, new, old)
+    except (access.AccessError, EOFError, OSError) as e:
+        typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2) from e
+    typer.echo("PIN set. Nothing is shared with any assistant until you run `membridge grant-sensitive <client>`.")
+
+
+@app.command("grant-sensitive")
+def grant_sensitive(
+    client: Annotated[str, typer.Argument(help="The client name the assistant connects as (MEMBRIDGE_CLIENT_NAME)")],
+    minutes: Annotated[int, typer.Option(help="How long the grant lasts")] = 10,
+    uses: Annotated[int, typer.Option(help="How many private reads it allows")] = 25,
+) -> None:
+    """Let ONE assistant read private memories for a short time. Needs your PIN (hidden prompt)."""
+    import getpass
+
+    from .memory import access
+
+    store = Store(Settings().db_path)
+    try:
+        out = access.create_grant(store, getpass.getpass("PIN: "), client, minutes, uses)
+    except (access.AccessError, EOFError, OSError) as e:
+        typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2) from e
+    typer.echo(json.dumps(out))
+
+
+@app.command("revoke-sensitive")
+def revoke_sensitive(client: Annotated[str | None, typer.Argument(help="Omit to revoke every grant")] = None) -> None:
+    """End access to private memories now."""
+    from .memory import access
+
+    typer.echo(json.dumps({"revoked": access.revoke(Store(Settings().db_path), client)}))
+
+
+@app.command("grants")
+def grants() -> None:
+    """Who may currently read private memories."""
+    from .memory import access
+
+    store = Store(Settings().db_path)
+    typer.echo(json.dumps({"pin_set": access.has_pin(store), "grants": access.list_grants(store)}, indent=2))
+
+
+@app.command("forget")
+def forget(memory_id: str, yes: Annotated[bool, typer.Option("--yes", help="Do not ask")] = False) -> None:
+    """Permanently forget a memory (confirm here; an assistant can only request it)."""
+    svc = _human_service(Settings())
+    first = svc.forget_memory(memory_id, actor="cli")
+    typer.echo(f"Will forget: {first['will_forget']}")
+    if not yes and not typer.confirm("Forget this permanently?"):
+        raise typer.Exit(1)
+    typer.echo(json.dumps(svc.forget_memory(memory_id, first["confirm_token"], actor="cli")))
+
+
+@app.command("forget-requests")
+def forget_requests() -> None:
+    """Memories an assistant has asked to forget and is waiting on you for."""
+    typer.echo(json.dumps(_human_service(Settings()).list_forget_requests(), indent=2))
+
+
+@app.command("audit-verify")
+def audit_verify() -> None:
+    """Check the audit log's hash chain: any edited or removed entry is reported."""
+    from .store.sqlite import verify_audit_chain
+
+    store = Store(Settings().db_path)
+    store.flush_audit()
+    out = verify_audit_chain(store)
+    typer.echo(json.dumps(out))
+    raise typer.Exit(0 if out["ok"] else 1)
 
 
 def _secure(path: str, encrypt: bool, passphrase_env: str | None) -> str:
@@ -331,6 +448,11 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
     if host not in ("127.0.0.1", "localhost", "::1") and os.environ.get("MEMBRIDGE_IN_CONTAINER") != "1":
         typer.secho("Refusing to bind a non-loopback address (set only inside the official container).", fg=typer.colors.RED, err=True)
         raise typer.Exit(2)
+    import secrets
+
+    token = os.environ.get("MEMBRIDGE_DASHBOARD_TOKEN") or secrets.token_urlsafe(24)
+    os.environ["MEMBRIDGE_DASHBOARD_TOKEN"] = token  # the app factory below reads it
+    typer.echo(f"\nOpen the dashboard (this link carries this launch's access token):\n  http://{host}:{port}/?token={token}\n")
     uvicorn.run("membridge.api.app:create_app", factory=True, host=host, port=port, log_level="info")
 
 

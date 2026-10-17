@@ -19,6 +19,12 @@ def svc(export_file: Path, store: Store) -> MemoryService:
     return MemoryService(store)
 
 
+@pytest.fixture
+def me(svc: MemoryService, store: Store) -> MemoryService:
+    """The same store seen by the person (CLI/dashboard), not by an agent."""
+    return MemoryService(store, actor="me", human=True)
+
+
 def test_search_returns_current_and_history_with_evidence(svc: MemoryService) -> None:
     pkg = svc.search_memory("What database did I decide to use for Atlas?")
     assert pkg["sufficient_evidence"]
@@ -66,18 +72,23 @@ def test_record_decision_supersedes_previous_and_keeps_history(svc: MemoryServic
     assert any("DuckDB" in m["statement"] for m in ctx["history"])
 
 
-def test_forget_requires_confirmation_and_is_not_resurrected(svc: MemoryService, store: Store) -> None:
+def test_agent_can_only_request_a_forget_and_the_person_confirms(svc: MemoryService, me: MemoryService, store: Store) -> None:
     mid = svc.save_memory("Temporary note about lunch plans", "fact", "user_stated", 0.9)["memory_id"]
-    first = svc.forget_memory(mid)
-    assert first["confirmation_required"] and svc.get_memory(mid)["status"] == "current"
+    asked = svc.forget_memory(mid)
+    assert asked["confirmation_required"] and "confirm_token" not in asked and svc.get_memory(mid)["status"] == "current"
+    guessed = svc.forget_memory(mid, confirm_token="req-" + mid)  # a token is not something an agent can obtain or pass
+    assert guessed["confirmation_required"] and svc.get_memory(mid)["status"] == "current"
+    assert [r["id"] for r in me.list_forget_requests()["requests"]] == [mid]
+    first = me.forget_memory(mid)
     with pytest.raises(ServiceError, match="invalid or expired"):
-        svc.forget_memory(mid, confirm_token="wrong")
-    assert svc.forget_memory(mid, confirm_token=first["confirm_token"]) == {"forgotten": mid}
+        me.forget_memory(mid, confirm_token="wrong")
+    assert me.forget_memory(mid, confirm_token=first["confirm_token"]) == {"forgotten": mid}
     with pytest.raises(ServiceError):
         svc.get_memory(mid)
     again = svc.save_memory("Temporary note about lunch plans", "fact", "user_stated", 0.9)
     assert again["result"] == "skipped_deleted"
     assert store.conn.execute("SELECT statement FROM memories WHERE id=?", (mid,)).fetchone()[0] == "[forgotten]"
+    assert me.list_forget_requests()["requests"] == []
 
 
 def test_provenance_trace_resolves_to_original_message(svc: MemoryService) -> None:
@@ -91,7 +102,11 @@ def test_update_memory_validates_and_audits(svc: MemoryService, store: Store) ->
     mid = svc.search_memory("prefer Python")["memories"][0]["id"]
     with pytest.raises(ServiceError):
         svc.update_memory(mid, {"object": "x"}, "bad field")
-    svc.update_memory(mid, {"verification": "user_verified", "confidence": 1.0}, "user confirmed")
+    with pytest.raises(ServiceError, match="user's decisions"):  # an agent cannot vouch for a memory
+        svc.update_memory(mid, {"verification": "user_verified"}, "trust me")
+    with pytest.raises(ServiceError, match="user's decisions"):
+        svc.update_memory(mid, {"status": "current"}, "reinstate")
+    MemoryService(store, actor="me", human=True).update_memory(mid, {"verification": "user_verified", "confidence": 1.0}, "user confirmed")
     assert svc.get_memory(mid)["verification"] == "user_verified"
     assert store.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='update_memory'").fetchone()[0] == 1
 

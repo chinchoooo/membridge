@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..memory.models import sensitivity_of
 from ..store.sqlite import Store
 from .base import ImportAdapter, ParseFailure, RawConversation
 from .chatgpt import ChatGPTAdapter
@@ -296,7 +297,7 @@ def _ingest(
             conn.execute(
                 "INSERT INTO messages(id, conversation_id, external_id, parent_external_id, seq, role, "
                 "author_name, create_time, content_type, text, content_hash, on_current_branch, "
-                "limitations_json, metadata_json, import_job) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "limitations_json, metadata_json, import_job, sensitivity) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     mid,
                     cid,
@@ -313,6 +314,7 @@ def _ingest(
                     json.dumps(msg.limitations),
                     json.dumps(msg.metadata),
                     job_id,
+                    sensitivity_of(msg.text),  # raw text is classified on the way in, so it cannot leak around the memory filter
                 ),
             )
             conn.execute(
@@ -322,6 +324,9 @@ def _ingest(
             m.messages_new += 1
         elif row[0] == mhash:
             m.messages_existing += 1
+            # editing or regenerating a reply changes which branch is current; extraction must follow the latest import
+            conn.execute("UPDATE messages SET on_current_branch=? WHERE id=? AND on_current_branch!=?",
+                         (int(msg.on_current_branch), mid, int(msg.on_current_branch)))  # fmt: skip
         else:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO message_revisions(message_id, content_hash, text, import_job, seen_at) "

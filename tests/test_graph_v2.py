@@ -88,7 +88,7 @@ def test_merge_removes_absorbed_node_and_split_restores_it(built: Store, graph: 
         upsert(built, Candidate(statement=f"I rely on {name} {i}.", category="fact", entities=[EntityRef(name)], ref=f"m{i}", ts=10.0 + i))
     graph.rebuild(built)
     before = graph.counts()["nodes_entity"]
-    svc = MemoryService(built, graph)
+    svc = MemoryService(built, graph, human=True)  # splitting a merge is the user's call
     assert svc.resolve_entities()["auto_merged"]
     assert graph.counts()["nodes_entity"] == before - 1
     merge_id = built.conn.execute("SELECT id FROM entity_merges WHERE reversed_at IS NULL").fetchone()[0]

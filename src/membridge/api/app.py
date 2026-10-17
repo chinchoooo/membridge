@@ -1,14 +1,18 @@
 """Dashboard/API backend (FastAPI). Local only.
 
-Hardening: loopback bind (enforced by the CLI), Host-header allow-list (blocks DNS rebinding), no CORS,
-and every mutating request must carry a custom header (a cross-origin web page cannot send it without a
-preflight, which is never granted). Destructive actions use the same two-step confirmation as MCP.
+Hardening: loopback bind (enforced by the CLI), a per-launch access token (an HttpOnly SameSite=Strict cookie for the
+UI, a bearer header for scripts: another program on this machine, or a web page, cannot just call the API), a Host-header
+allow-list (blocks DNS rebinding), an Origin check, no CORS, and every mutating request must carry a custom header.
+Destructive actions use a two-step confirmation that only this (human) interface can complete.
 """
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -16,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -29,6 +33,8 @@ from ..store.graph import GraphStore
 from ..store.sqlite import Store
 
 MUTATING_HEADER = "x-membridge"
+COOKIE = "mb_token"
+LOOPBACK = frozenset({"127.0.0.1", "localhost", "[::1]"})
 
 
 class RetrieveIn(BaseModel):
@@ -85,25 +91,64 @@ class ConsolidateIn(BaseModel):
     scope: str = "incremental"
 
 
+class PinIn(BaseModel):
+    new_pin: str = Field(min_length=6, max_length=200)
+    old_pin: str | None = Field(None, max_length=200)
+
+
+class GrantIn(BaseModel):
+    pin: str = Field(min_length=1, max_length=200)
+    client: str = Field(min_length=1, max_length=80)
+    minutes: int = Field(10, ge=1, le=120)
+    uses: int = Field(25, ge=1, le=200)
+
+
+class RevokeIn(BaseModel):
+    client: str | None = Field(None, max_length=80)
+
+
 class ExportIn(BaseModel):
     format: str = "json"
     include_raw: bool = False
     include_sensitive: bool = False
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, *, token: str | None = None, extra_hosts: frozenset[str] = frozenset()) -> FastAPI:
     s = settings or Settings()
     store = Store(s.db_path)
     graph = GraphStore(s.falkor_host, s.falkor_port, s.falkor_graph)
-    svc = MemoryService(store, graph, actor="dashboard")
+    svc = MemoryService(store, graph, actor="dashboard", human=True)
     jobs: dict[str, dict[str, Any]] = {}
     app = FastAPI(title="MemBridge", docs_url=None, redoc_url=None, openapi_url=None)
+    access_token = token or os.environ.get("MEMBRIDGE_DASHBOARD_TOKEN") or secrets.token_urlsafe(24)
+    if len(access_token) < 16:
+        raise ValueError("the dashboard token must be at least 16 characters")
+    app.state.token = access_token
+    app.state.store, app.state.svc = store, svc
+    hosts = LOOPBACK | extra_hosts
+
+    def authorised(request: Request) -> bool:
+        bearer = request.headers.get("authorization", "")
+        presented = bearer[7:] if bearer.lower().startswith("bearer ") else request.cookies.get(COOKIE, "")
+        return bool(presented) and hmac.compare_digest(presented, access_token)
 
     @app.middleware("http")
     async def guard(request: Request, call_next: Any) -> Any:
-        host = (request.headers.get("host") or "").split(":")[0].lower()
-        if host not in {"127.0.0.1", "localhost", "[::1]", "testserver"}:
+        host = (request.headers.get("host") or "").rsplit(":", 1)[0].lower() if not (request.headers.get("host") or "").startswith("[") else (
+            (request.headers.get("host") or "").split("]")[0] + "]")  # fmt: skip
+        if host not in hosts:
             return JSONResponse({"error": "host not allowed"}, status_code=403)
+        origin = request.headers.get("origin")
+        if origin and origin != "null" and (origin.split("://", 1)[-1].rsplit(":", 1)[0].lower() not in hosts):
+            return JSONResponse({"error": "origin not allowed"}, status_code=403)
+        if request.url.path == "/" and request.query_params.get("token"):  # the link `membridge serve` prints
+            if hmac.compare_digest(request.query_params["token"], access_token):
+                r = RedirectResponse("/", status_code=303)
+                r.set_cookie(COOKIE, access_token, httponly=True, samesite="strict", path="/")
+                return r
+            return JSONResponse({"error": "wrong token"}, status_code=401)
+        if request.url.path.startswith("/api/") and not authorised(request):
+            return JSONResponse({"error": "unauthorised: open the link printed by `membridge serve`"}, status_code=401)
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and MUTATING_HEADER not in request.headers:
             return JSONResponse({"error": f"missing {MUTATING_HEADER} header"}, status_code=403)
         return await call_next(request)
@@ -132,14 +177,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ---- memories ------------------------------------------------------------------
     @app.get("/api/memories")
-    def memories(q: str = "", category: str = "", status: str = "", verification: str = "", limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    def memories(q: str = "", category: str = "", status: str = "", verification: str = "", limit: int = 50, offset: int = 0,
+                 show_private: bool = False) -> dict[str, Any]:  # fmt: skip
         limit = max(1, min(limit, 200))
         with store.lock:
             if q.strip():
                 f = {k: v for k, v in (("category", category), ("status", status), ("verification", verification)) if v}
-                pkg = svc.search_memory(q, limit, f)
+                pkg = svc.search_memory(q, limit, f, include_sensitive=show_private)
                 return {"items": pkg["memories"], "total": len(pkg["memories"]), "search": pkg}
             sql, args = "SELECT id, statement, category, status, verification, confidence, score, mention_count, valid_from, sensitivity FROM memories WHERE status!='deleted'", []
+            if not show_private:
+                sql += " AND sensitivity='normal'"
             for col, val in (("category", category), ("status", status), ("verification", verification)):
                 if val:
                     sql += f" AND {col}=?"
@@ -150,7 +198,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/memories/{memory_id}")
     def memory_detail(memory_id: str) -> dict[str, Any]:
-        return {"memory": svc.get_memory(memory_id), "provenance": svc.trace_memory_provenance(memory_id), "related": svc.get_related_memories(memory_id, 1)}
+        return {"memory": svc.get_memory(memory_id, True), "provenance": svc.trace_memory_provenance(memory_id, True),
+                "related": svc.get_related_memories(memory_id, 1, True)}
 
     @app.post("/api/memories")
     def memory_create(body: MemoryIn) -> dict[str, Any]:
@@ -190,8 +239,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return svc.get_project_context(name)
 
     @app.get("/api/conversations/{cid}")
-    def conversation(cid: str) -> dict[str, Any]:
-        return svc.get_conversation(cid, 120)
+    def conversation(cid: str, show_private: bool = False) -> dict[str, Any]:
+        return svc.get_conversation(cid, 120, show_private)
 
     @app.get("/api/contradictions")
     def contradictions() -> dict[str, Any]:
@@ -239,6 +288,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/contradictions/resolve")
     def contradiction_resolve(body: ContradictionIn) -> dict[str, Any]:
         return svc.resolve_contradiction(body.keep_id, body.drop_id, body.reason, actor="dashboard")
+
+    # ---- consent for private memories ---------------------------------------------------------
+    @app.get("/api/private/status")
+    def private_status() -> dict[str, Any]:
+        return svc.list_grants()
+
+    @app.post("/api/private/pin")
+    def private_pin(body: PinIn) -> dict[str, Any]:
+        return svc.set_pin(body.new_pin, body.old_pin)
+
+    @app.post("/api/private/grant")
+    def private_grant(body: GrantIn) -> dict[str, Any]:
+        return svc.grant_sensitive(body.pin, body.client, body.minutes, body.uses)
+
+    @app.post("/api/private/revoke")
+    def private_revoke(body: RevokeIn) -> dict[str, Any]:
+        return svc.revoke_sensitive(body.client)
+
+    @app.get("/api/forget-requests")
+    def forget_requests() -> dict[str, Any]:
+        return svc.list_forget_requests()
+
+    @app.get("/api/audit/verify")
+    def audit_verify() -> dict[str, Any]:
+        from ..store.sqlite import verify_audit_chain
+
+        with store.lock:
+            store.flush_audit()
+            return verify_audit_chain(store)
 
     # ---- maintenance -----------------------------------------------------------------------
     @app.post("/api/imports")

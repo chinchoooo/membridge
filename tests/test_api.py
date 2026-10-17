@@ -12,6 +12,7 @@ from membridge.memory.pipeline import run_extraction
 from membridge.store.sqlite import Store
 
 H = {"x-membridge": "1"}
+TOKEN = "test-token-0123456789abcdef"
 
 
 @pytest.fixture
@@ -21,7 +22,9 @@ def client(tmp_path: Path, export_file: Path) -> TestClient:
     run_extraction(s)
     s.close()
     settings = Settings(data_dir=tmp_path / "d", falkor_port=1)  # graph unreachable -> degraded
-    return TestClient(create_app(settings), base_url="http://127.0.0.1")
+    c = TestClient(create_app(settings, token=TOKEN), base_url="http://127.0.0.1")
+    c.headers["authorization"] = f"Bearer {TOKEN}"
+    return c
 
 
 def test_overview_counts(client: TestClient) -> None:
@@ -113,11 +116,59 @@ def test_entity_review_loop_via_api(client: TestClient) -> None:
     assert client.post("/api/entity-review/split", json={"merge_id": 999}, headers=H).status_code == 400
 
 
-def test_contradiction_resolution_keeps_history(client: TestClient) -> None:
+def test_contradiction_resolution_keeps_history_and_is_remembered(client: TestClient) -> None:
     items = client.get("/api/memories", params={"category": "decision"}).json()["items"]
     keep, drop = items[0]["id"], items[1]["id"]
+    # two memories that were never in conflict cannot be "resolved"
+    assert client.post("/api/contradictions/resolve", json={"keep_id": keep, "drop_id": drop}, headers=H).status_code == 400
+    st = client.app.state.store  # type: ignore[attr-defined]
+    st.conn.execute("UPDATE memories SET status='unresolved' WHERE id IN (?,?)", (keep, drop))
+    st.conn.execute("INSERT INTO memory_links(src_id, rel, dst_id, reason, created_at) VALUES (?,?,?,?,0)", (keep, "CONTRADICTS", drop, "test"))
+    st.conn.commit()
     out = client.post("/api/contradictions/resolve", json={"keep_id": keep, "drop_id": drop}, headers=H)
     assert out.status_code == 200 and out.json() == {"kept": keep, "superseded": drop}
     d = client.get(f"/api/memories/{drop}").json()["memory"]
     assert d["status"] == "superseded" and any(link["rel"] == "SUPERSEDES" for link in d["links"])
     assert client.post("/api/contradictions/resolve", json={"keep_id": keep, "drop_id": keep}, headers=H).status_code == 400
+
+
+def test_api_needs_the_launch_token(client: TestClient) -> None:
+    anon = TestClient(client.app, base_url="http://127.0.0.1")
+    assert anon.get("/api/overview").status_code == 401  # another local program cannot just call the API
+    assert anon.get("/api/overview", headers={"authorization": "Bearer wrong-token-0123456789"}).status_code == 401
+    assert anon.get("/api/memories").status_code == 401
+    assert anon.post("/api/backup", headers=H).status_code == 401
+    # the link `membridge serve` prints sets an HttpOnly, SameSite=Strict cookie that then authorises the UI
+    r = anon.get(f"/?token={TOKEN}", follow_redirects=False)
+    assert r.status_code == 303 and "httponly" in r.headers["set-cookie"].lower() and "samesite=strict" in r.headers["set-cookie"].lower()
+    assert anon.get("/api/overview").status_code == 200
+    assert TestClient(client.app, base_url="http://127.0.0.1").get("/?token=nope-nope-nope-nope-nope").status_code == 401
+
+
+def test_cross_origin_requests_are_refused(client: TestClient) -> None:
+    assert client.post("/api/consolidate", json={"scope": "summaries"}, headers={**H, "origin": "https://evil.example"}).status_code == 403
+    assert client.post("/api/consolidate", json={"scope": "summaries"}, headers={**H, "origin": "http://127.0.0.1:8787"}).status_code == 200
+    assert client.get("/api/overview", headers={"host": "testserver"}).status_code == 403  # not on the allow-list unless a test adds it
+
+
+def test_private_memories_are_hidden_from_listings_until_asked(client: TestClient) -> None:
+    c = client.post("/api/memories", json={"content": "I was diagnosed with an anxiety disorder", "category": "health", "source": "user_stated"}, headers=H)
+    assert c.status_code == 200
+    mid = c.json()["memory_id"]
+    assert all(i["id"] != mid for i in client.get("/api/memories", params={"limit": 200}).json()["items"])
+    assert any(i["id"] == mid for i in client.get("/api/memories", params={"limit": 200, "show_private": True}).json()["items"])
+    assert client.get(f"/api/memories/{mid}").json()["memory"]["id"] == mid  # opening one deliberately is allowed for the user
+    assert client.get("/api/audit/verify").json()["ok"] is True
+
+
+def test_pin_grant_and_revoke_flow(client: TestClient) -> None:
+    assert client.post("/api/private/grant", json={"pin": "123456", "client": "claude-code"}, headers=H).status_code == 400  # no PIN yet
+    assert client.post("/api/private/pin", json={"new_pin": "12"}, headers=H).status_code == 422
+    assert client.post("/api/private/pin", json={"new_pin": "246810"}, headers=H).status_code == 200
+    assert client.post("/api/private/grant", json={"pin": "wrong-pin", "client": "claude-code"}, headers=H).status_code == 400
+    ok = client.post("/api/private/grant", json={"pin": "246810", "client": "claude-code", "minutes": 5, "uses": 3}, headers=H)
+    assert ok.status_code == 200 and ok.json()["uses"] == 3
+    status = client.get("/api/private/status").json()
+    assert status["pin_set"] and status["grants"][0]["active"]
+    assert client.post("/api/private/revoke", json={"client": "claude-code"}, headers=H).json() == {"revoked": 1}
+    assert not client.get("/api/private/status").json()["grants"][0]["active"]

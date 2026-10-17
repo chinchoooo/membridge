@@ -95,12 +95,20 @@ def test_contradiction_preserves_history_over_mcp(data_dir: Path) -> None:
     assert any("Polars" in m["statement"] for m in ctx["current"]) and any("DuckDB" in m["statement"] for m in ctx["history"])
 
 
-def test_forget_is_two_step_over_mcp(data_dir: Path) -> None:
+def test_forget_over_mcp_only_files_a_request(data_dir: Path) -> None:
     mid = call(data_dir, "a", "save_memory", content="Remember the Atlas demo is on Friday", category="fact", source="user_stated")["memory_id"]
     first = call(data_dir, "a", "forget_memory", memory_id=mid)
-    assert first["confirmation_required"] is True
+    assert first["confirmation_required"] is True and "confirm_token" not in first
     assert call(data_dir, "a", "get_memory", memory_id=mid)["status"] == "current"  # nothing deleted yet
-    assert call(data_dir, "a", "forget_memory", memory_id=mid, confirm_token=first["confirm_token"]) == {"forgotten": mid}
+    again = call(data_dir, "a", "forget_memory", memory_id=mid, confirm_token="req-" + mid)  # a guessed token is ignored
+    assert again["confirmation_required"] is True
+    assert call(data_dir, "a", "get_memory", memory_id=mid)["status"] == "current"
+    s = Store(data_dir / "membridge.db")  # the person confirms through their own interface
+    from membridge.memory.service import MemoryService
+
+    me = MemoryService(s, actor="me", human=True)
+    assert me.forget_memory(mid, me.forget_memory(mid)["confirm_token"]) == {"forgotten": mid}
+    s.close()
 
 
 def test_invalid_input_returns_tool_error_not_crash(data_dir: Path) -> None:

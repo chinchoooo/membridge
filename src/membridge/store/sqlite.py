@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -99,13 +100,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
 """
 
 
+class VaultLockedError(RuntimeError):
+    """The database is encrypted at rest (`membridge lock`). Opening it would silently create an empty one beside it."""
+
+
 class Store:
     """Thin wrapper over a SQLite connection (WAL, foreign keys on)."""
 
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists() and path.with_suffix(path.suffix + ".enc").exists():
+            raise VaultLockedError(f"{path.name} is locked (encrypted at rest). Run `membridge unlock` first.")
         self.path = path
-        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
+        self.conn.execute("PRAGMA busy_timeout=30000")  # a CLI import and a running server wait for each other, not fail
         self._audit_buf: list[tuple[float, str, str, str | None, str]] = []
         self._audit_thread: threading.Thread | None = None
         self._closing = threading.Event()
@@ -131,7 +139,7 @@ class Store:
     # ---- read-path audit: buffered, so a search never commits ---------------------------------------------
     def audit_read(self, actor: str, action: str, target: str | None = None, **detail: Any) -> None:
         """Audit a READ without touching the database: append to memory; a background thread flushes in batches."""
-        self._audit_buf.append((time.time(), actor, action, target, json.dumps(detail)))
+        self._audit_buf.append((time.time(), actor, action, target, json.dumps(detail, sort_keys=True)))
         if self._audit_thread is None:
             self._audit_thread = threading.Thread(target=self._audit_loop, daemon=True, name="membridge-audit")
             self._audit_thread.start()
@@ -150,7 +158,15 @@ class Store:
             buf, self._audit_buf = self._audit_buf, []
             if not buf:
                 return 0
-            self.conn.executemany("INSERT INTO audit_log(ts, actor, action, target, detail_json) VALUES (?,?,?,?,?)", buf)
+            prev = self._last_hash()
+            rows = []
+            for ts, actor, action, target, detail in buf:
+                h = _row_hash(prev, ts, actor, action, target, detail)
+                rows.append((ts, actor, action, target, detail, prev, h))
+                prev = h
+            self.conn.executemany(
+                "INSERT INTO audit_log(ts, actor, action, target, detail_json, prev_hash, hash) VALUES (?,?,?,?,?,?,?)", rows
+            )
             self.conn.commit()
             return len(buf)
 
@@ -169,13 +185,23 @@ class Store:
             raise
 
     # ---- audit -------------------------------------------------------
-    def audit(
-        self, actor: str, action: str, target: str | None = None, **detail: Any
-    ) -> None:
+    def _last_hash(self) -> str:
+        row = self.conn.execute("SELECT hash FROM audit_log WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+        return "" if row is None else str(row[0])
+
+    def audit(self, actor: str, action: str, target: str | None = None, **detail: Any) -> None:
+        """Append to the audit log. Each row commits to the one before it, so deleting or editing history is detectable."""
+        ts, d = time.time(), json.dumps(detail, sort_keys=True)
+        prev = self._last_hash()
         self.conn.execute(
-            "INSERT INTO audit_log(ts, actor, action, target, detail_json) VALUES (?,?,?,?,?)",
-            (time.time(), actor, action, target, json.dumps(detail)),
+            "INSERT INTO audit_log(ts, actor, action, target, detail_json, prev_hash, hash) VALUES (?,?,?,?,?,?,?)",
+            (ts, actor, action, target, d, prev, _row_hash(prev, ts, actor, action, target, d)),
         )
+
+    def audit_sync(self, actor: str, action: str, target: str | None = None, **detail: Any) -> None:
+        """Audit and commit now. Used for access to private data and credentials: these must survive a killed server."""
+        self.audit(actor, action, target, **detail)
+        self.conn.commit()
 
     # ---- read helpers ------------------------------------------------
     def get_message(self, message_id: str) -> sqlite3.Row | None:
@@ -212,3 +238,25 @@ class Store:
             "import_jobs": one("SELECT COUNT(*) FROM import_jobs"),
             "import_errors": one("SELECT COUNT(*) FROM import_errors"),
         }
+
+
+def _row_hash(prev: str, ts: float, actor: str, action: str, target: str | None, detail: str) -> str:
+    return hashlib.sha256(f"{prev}|{ts!r}|{actor}|{action}|{target}|{detail}".encode()).hexdigest()
+
+
+def verify_audit_chain(store: Store) -> dict[str, Any]:
+    """Re-derive every row hash and check each row points at the previous one. Rows written before the chain existed
+    have no hash and are skipped. Two processes appending at the same instant can also leave a benign fork; a break
+    that is not adjacent to such a pair means a row was edited or removed."""
+    rows = store.conn.execute(
+        "SELECT id, ts, actor, action, target, detail_json, prev_hash, hash FROM audit_log WHERE hash IS NOT NULL ORDER BY id"
+    ).fetchall()
+    breaks: list[int] = []
+    prev = ""
+    for r in rows:
+        if r["hash"] != _row_hash(r["prev_hash"] or "", r["ts"], r["actor"], r["action"], r["target"], r["detail_json"]):
+            breaks.append(r["id"])  # the row itself was altered
+        elif (r["prev_hash"] or "") != prev:
+            breaks.append(r["id"])  # something between this row and the one before it is gone (or a concurrent fork)
+        prev = r["hash"]
+    return {"hashed_rows": len(rows), "breaks": breaks, "ok": not breaks}
