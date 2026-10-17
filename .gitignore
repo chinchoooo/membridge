@@ -11,6 +11,7 @@
 .ruff_cache/
 .venv/
 /_to_delete_*
+/chatgpt-dump*
 /areas/
 /profile.md
 /topics/

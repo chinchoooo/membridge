@@ -150,10 +150,12 @@ _BULLET = re.compile(r"^\s*[-*]\s+(.*\S)\s*$")
 def _doc(
     store: Store, kind: str, name: str, text: str, updated: str | None, job: str
 ) -> str:
-    did = "doc_" + sha(kind, name)[:24]
+    # The id covers the content: a second, different file with the same name is a new document, so the memories that
+    # cite the first one keep pointing at text that still contains them.
+    did = "doc_" + sha(kind, name, sha(text))[:24]
     store.conn.execute(
-        "INSERT OR REPLACE INTO documents(id, kind, name, text, content_hash, updated_at, import_job) VALUES (?,?,?,?,?,?,?)",
-        (did, kind, name, text, sha(text), updated, job),
+        "INSERT OR REPLACE INTO documents(id, kind, name, text, content_hash, updated_at, import_job, sensitivity) VALUES (?,?,?,?,?,?,?,?)",
+        (did, kind, name, text, sha(text), updated, job, "sensitive" if sensitivity_of(text) == "sensitive" else "normal"),
     )
     return did
 
@@ -174,9 +176,21 @@ def clean_claude_bullet(text: str) -> tuple[str, str | None, str | None]:
 
 
 def purge_claude_seeds(store: Store) -> int:
-    """Hard-delete memories derived purely from Claude's memory/project files so they can be re-derived cleanly."""
+    """Hard-delete memories derived *purely* from Claude's memory/project files so they can be re-derived cleanly.
+
+    Never touched: tombstones (the user's 'forget' must survive a re-seed), anything the user stated or verified
+    themselves, and anything with evidence from a real message or a client note.
+    """
     c = store.conn
-    ids = [r[0] for r in c.execute("SELECT id FROM memories WHERE origin IN ('claude_memory','claude_project')")]
+    ids = [
+        r[0]
+        for r in c.execute(
+            "SELECT m.id FROM memories m WHERE m.origin IN ('claude_memory','claude_project') AND m.status!='deleted' "
+            "AND m.verification NOT IN ('user_stated','user_verified','client_asserted') "
+            "AND NOT EXISTS (SELECT 1 FROM memory_evidence e LEFT JOIN documents d ON d.id=e.ref "
+            "  WHERE e.memory_id=m.id AND (e.ref_kind!='document' OR d.kind NOT IN ('claude_memory','claude_project')))"
+        )
+    ]
     for mid in ids:
         for sql in (
             "DELETE FROM memory_evidence WHERE memory_id=?", "DELETE FROM memories_fts WHERE memory_id=?",

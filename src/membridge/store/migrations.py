@@ -175,6 +175,53 @@ def _m6_generation(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m7_trust_and_visibility(conn: sqlite3.Connection) -> None:
+    """Trust-aware conflicts, visibility of raw text, sensitive-access grants, tamper-evident audit.
+
+    * memories.valid_time_known: 0 when the source gave no date (a ChatGPT/Claude summary); such a statement is never
+      treated as *newer* than a dated one.
+    * messages/documents.sensitivity: raw text is classified too, so it cannot leak around the memory-level filter.
+    * sensitive_grants / settings_kv: time-limited, client-bound consent to see sensitive memories; PIN hash.
+    * audit_log.prev_hash/hash: each row commits to the one before it.
+    Existing rows are re-classified with the current lexicon; they are only ever *upgraded* to sensitive.
+    """
+    from ..memory.models import sensitivity_of
+
+    _add_columns(conn, "memories", {"valid_time_known": "INTEGER NOT NULL DEFAULT 1"})
+    _add_columns(conn, "messages", {"sensitivity": "TEXT NOT NULL DEFAULT 'normal'"})
+    _add_columns(conn, "documents", {"sensitivity": "TEXT NOT NULL DEFAULT 'normal'"})
+    _add_columns(conn, "audit_log", {"prev_hash": "TEXT", "hash": "TEXT"})
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS sensitive_grants (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          client TEXT NOT NULL,
+          created_at REAL NOT NULL,
+          expires_at REAL NOT NULL,
+          uses_left INTEGER NOT NULL,
+          revoked INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_grants_client ON sensitive_grants(client, expires_at);
+        CREATE TABLE IF NOT EXISTS settings_kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS conflict_resolutions (
+          subject TEXT NOT NULL, predicate TEXT NOT NULL, kept_obj TEXT NOT NULL, dropped_obj TEXT NOT NULL,
+          resolved_at REAL NOT NULL, PRIMARY KEY (subject, predicate, kept_obj, dropped_obj)
+        );
+        CREATE INDEX IF NOT EXISTS idx_mem_sens ON memories(sensitivity, status);
+        """
+    )
+    conn.execute(
+        "UPDATE memories SET valid_time_known=0 WHERE origin IN ('claude_memory','claude_project','chatgpt_memory') "
+        "AND NOT EXISTS (SELECT 1 FROM memory_evidence e WHERE e.memory_id=memories.id AND e.ref_kind='message')"
+    )
+    for table, col in (("memories", "statement"), ("messages", "text"), ("documents", "text")):
+        pk = "id"
+        rows = conn.execute(f"SELECT {pk}, {col} FROM {table} WHERE sensitivity!='sensitive'").fetchall()
+        flag = [(r[0],) for r in rows if r[1] and sensitivity_of(str(r[1])) == "sensitive"]
+        for i in range(0, len(flag), 500):
+            conn.executemany(f"UPDATE {table} SET sensitivity='sensitive' WHERE {pk}=?", flag[i : i + 500])
+
+
 MIGRATIONS: list[tuple[int, str, Migration]] = [
     (1, "baseline (v1 schema from sqlite.py/memory_schema.py)", lambda c: None),
     (2, "bitemporal facts, triples, aliases, merges, relations, communities, embeddings", _m2_bitemporal_and_graph_tables),
@@ -182,6 +229,7 @@ MIGRATIONS: list[tuple[int, str, Migration]] = [
     (4, "scale indexes (evidence.ref, links.dst, mentions.conv)", _m4_scale_indexes),
     (5, "materialised entity co-occurrence", _m5_cooccurrence),
     (6, "generation counter triggers + PPR cache tables", _m6_generation),
+    (7, "trust tiers, raw-text sensitivity, sensitive grants, audit hash chain", _m7_trust_and_visibility),
 ]
 LATEST = MIGRATIONS[-1][0]
 

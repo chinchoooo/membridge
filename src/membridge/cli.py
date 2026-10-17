@@ -93,6 +93,19 @@ def seed(
     store.close()
 
 
+@app.command("seed-text")
+def seed_text(
+    dump: Annotated[Path, typer.Argument(help="ChatGPT data-portability dump (see docs/CHATGPT_DUMP_PROMPT.md)")],
+    dry_run: Annotated[bool, typer.Option(help="Parse and count only; write nothing")] = False,
+) -> None:
+    """Import a ChatGPT memory dump as provider-stated memories (sensitive ones stay out of default retrieval)."""
+    from .memory.seed_text import seed_from_text
+
+    store = Store(Settings().db_path)
+    typer.echo(json.dumps(seed_from_text(store, dump, dry_run=dry_run)))
+    store.close()
+
+
 @app.command()
 def extract() -> None:
     """Extract memories from imported messages (incremental, idempotent)."""
