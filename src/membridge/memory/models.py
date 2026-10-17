@@ -73,7 +73,8 @@ _SECRET_PATTERNS = (
     r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
     r"\b[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@",
-    r"\b(?:password|passwd|pwd|passphrase|api[_ -]?key|secret|token|pin)\s*(?:is|=|:)\s*\S{4,}",
+    r"\b(?:password|passwd|pwd|passphrase|passcode|pin|api[_ -]?key|(?:aws[_ ])?secret(?:[_ ]access[_ ]key)?|client[_ ]secret|"
+    r"access[_ ]key|auth[_ ]token|token|(?:2fa|otp|mfa|backup|recovery)(?:[_ -](?:backup|recovery))?[_ -]?codes?)\s*(?:is|are|=|:)\s*\S{4,}",
 )
 _SECRET = re.compile("|".join(f"(?:{p})" for p in _SECRET_PATTERNS), re.IGNORECASE)
 _CARD = re.compile(r"(?<![\w.])(?:\d[ -]?){13,19}(?![\w])")
@@ -101,6 +102,12 @@ def _card_spans(text: str) -> list[tuple[int, int]]:
 
 def sensitivity_of(text: str) -> str:
     return "sensitive" if _SENSITIVE.search(text) else "normal"
+
+
+def safe_title(title: str | None) -> str:
+    """A conversation title as an assistant may see it: private titles are replaced, credentials blanked."""
+    t = title or ""
+    return "[private conversation]" if sensitivity_of(t) == "sensitive" else redact_secrets(t)
 
 
 def contains_secret(text: str) -> bool:

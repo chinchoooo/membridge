@@ -22,6 +22,7 @@ from pathlib import Path
 from ..store.sqlite import Store
 from .consolidate import (
     _link,
+    _outrank,
     _resolve_conflicts,
     _supersede,
     dedup_key_of,
@@ -30,7 +31,7 @@ from .consolidate import (
     upsert,
     upsert_entity,
 )
-from .models import Candidate, EntityRef, canonical, contains_secret, sensitivity_of, sha
+from .models import Candidate, EntityRef, canonical, contains_secret, sensitivity_of, sha, trust_rank
 from .pipeline import _doc
 from .rules import extract_from_message
 from .summaries import refresh_summaries
@@ -266,6 +267,9 @@ def seed_from_text(store: Store, path: Path, *, dry_run: bool = False) -> dict[s
             continue
         ts = parse_when(it.when)
         if it.kind == "entity":
+            if sensitivity_of(f"{it.subject} {it.text}") == "sensitive":
+                counts["sensitive"] += 1  # an entity has no privacy flag: one whose name says something private is not created
+                continue
             upsert_entity(store, EntityRef(it.subject, it.etype if it.etype in _ENTITY_TYPES else "concept"))
             counts["entities"] += 1
         elif it.kind == "change" and len(it.chain) >= 2:
@@ -306,6 +310,13 @@ def _seed_change(store: Store, it: Item, did: str, ts: float | None, user: str |
     Written as 'compute the end state, change only what differs' so that re-importing the same file is a no-op."""
     n = len(it.chain)
     reason = f"chatgpt_change: {canonical(it.subject)}"
+    mine = trust_rank("model_inferred" if it.source == "inferred" else "provider_stated")
+
+    def alterable(mid: str) -> bool:
+        """A dump may rewrite history among its own claims, never what you or your assistants established."""
+        row = store.conn.execute("SELECT verification FROM memories WHERE id=?", (mid,)).fetchone()
+        return row is None or trust_rank(row["verification"]) <= mine
+
     ids: list[str] = []
     whens: list[float | None] = []
     for i, val in enumerate(it.chain):
@@ -313,14 +324,19 @@ def _seed_change(store: Store, it: Item, did: str, ts: float | None, user: str |
         c = _candidate(it, f"{it.subject}: {val}", did, when, user, category="other", derive=False)
         ids.append(upsert(store, c).memory_id)
         whens.append(when)
+    blocked: set[str] = set()  # values the dump may not make current: a stronger, older statement outranks them
     for i in range(1, n):
         if ids[i] != ids[i - 1]:
-            _link(store, ids[i], "SUPERSEDES", ids[i - 1], reason)
+            if alterable(ids[i - 1]):
+                _link(store, ids[i], "SUPERSEDES", ids[i - 1], reason)
+            else:  # the older value is something you stand behind: the dump's newer value does not replace it
+                _outrank(store, ids[i - 1], ids[i], "outranked_by_trust")
+                blocked.add(ids[i])
     last = ids[-1]
-    if _status(store, last) == "superseded":
+    if _status(store, last) == "superseded" and alterable(last) and last not in blocked:
         _set_current(store, last, whens[-1])
     for i, mid in enumerate(ids[:-1]):
-        if mid != last and _status(store, mid) == "current":
+        if mid != last and _status(store, mid) == "current" and alterable(mid) and alterable(ids[i + 1]):
             _supersede(store, ids[i + 1], mid, reason, whens[i + 1])
 
 

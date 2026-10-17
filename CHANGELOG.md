@@ -25,5 +25,12 @@ Found by an adversarial architecture review; each item has a regression test.
 - Exports exclude private entities/messages and redact credentials; PPR cache snapshot race fixed; agent-triggered consolidation is bounded; derived rebuilds coalesced.
 - Schema migration 7.
 
+### 0.2.0, second pass (independent re-review)
+- Private-only entities and private conversation titles are invisible; FalkorDB gets no private snippet/title/entity; forget and mark-private rebuild communities and summaries, drop orphan entities, compact the index and scrub free pages (`secure_delete`).
+- Dashboard: seeing/exporting private memories needs the PIN (ten-minute session); access log off; CLI `--public`/`--sensitive` need the PIN at a real terminal.
+- Agent edits drop to `client_asserted`; agent claims cannot take a user's statement out of circulation; dump `CHANGE` lines cannot overrule stated facts; private text matching is not an existence oracle.
+- Extraction ignores instructions, reported speech and quoted clauses; more credential shapes; remote LLM extraction never receives private messages.
+- Evidence gate: id-like tokens only for message anchors, slot-word candidate channel, aspect synonyms, tie-safe focus term. Migration 8.
+
 ## 0.1.0
 Initial release.

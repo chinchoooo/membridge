@@ -27,14 +27,14 @@ from typing import Any
 from ..graphalgo.adjacency import Graph, load_from_sqlite
 from ..graphalgo.ppr import PPRResult, personalized_pagerank
 from ..graphalgo.ppr_cache import cached_ppr
-from ..memory.models import canonical, redact_secrets
+from ..memory.models import canonical, redact_secrets, safe_title
 from ..store.graph import GraphStore, fulltext_query
 from ..store.sqlite import Store
 from .fusion import mmr, rrf, token_jaccard, weighted_sum
 from .index import WarmIndex, build_index
 from .pack import Option, pack
 
-CHANNEL_WEIGHTS = {"bm25_fact": 1.0, "bm25_msg": 0.7, "entity": 0.8, "hop": 0.6, "ppr": 1.0, "vector": 1.0}
+CHANNEL_WEIGHTS = {"bm25_fact": 1.0, "bm25_msg": 0.7, "entity": 0.8, "hop": 0.6, "ppr": 1.0, "vector": 1.0, "slot": 0.6}
 
 
 @dataclass
@@ -88,10 +88,20 @@ _SLOT_WORDS = {
     "uses_tool": "use tool tools stack tech technology language programming framework library",
     "studies": "learn learning study studying course topic interest",
     "deadline": "deadline due date when",
-    "is_project": "project building build app application product",
-    "uses": "use using choose chose decided decision stack technology",
-    "decided": "decide decision decided choose",
+    "is_project": "project building build app application",
+    "uses": "use using choose chose pick picked select selected decided decision stack technology choice",
+    "decided": "decide decision decided choose chose pick picked select selected choice",
 }  # fmt: skip
+# "storage" decisions answer questions about "the database", and so on: the aspect carries its everyday synonyms
+_ASPECT_WORDS = {
+    "storage": "database db datastore persistence", "database": "storage db datastore", "cache": "caching", "caching": "cache",
+    "deployment": "deploy hosting host server", "deploy": "deployment hosting host", "auth": "authentication login",
+    "frontend": "ui interface", "backend": "server api", "queue": "messaging broker", "search": "index",
+}  # fmt: skip
+_SLOT_INDEX: dict[str, set[str]] = {}
+for _pred, _words in _SLOT_WORDS.items():  # question word -> the predicates that answer it
+    for _w in _words.split():
+        _SLOT_INDEX.setdefault(_w, set()).add(_pred)
 _CATEGORY_WORDS = {
     "skill": "skill language programming framework technology tool tools",
     "interest": "interest learning topic hobby",
@@ -465,6 +475,9 @@ class Retriever:
             rankings["bm25_msg"] = list(dict.fromkeys(msg_facts))
         if ents:
             rankings["entity"] = self._entity_facts(list(ents))
+        slot_ids = self._slot_facts(query)
+        if slot_ids:
+            rankings["slot"] = slot_ids
         if hop_facts:
             rankings["hop"] = hop_facts
         ppr_res: PPRResult | None = None
@@ -584,7 +597,7 @@ class Retriever:
         exact: list[dict[str, Any]] = []
         for mh in msg_hits[:3] if items else []:  # raw messages only accompany an answer; they are never the answer to "no"
             exact.append({
-                "message_id": mh["id"], "conversation_id": mh["conversation_id"], "conversation": mh["title"], "role": mh["role"],
+                "message_id": mh["id"], "conversation_id": mh["conversation_id"], "conversation": safe_title(mh["title"]), "role": mh["role"],
                 "ts": mh["create_time"], "snippet": redact_secrets(_snippet(mh["text"], query)), "untrusted": True,
             })  # fmt: skip
         groups: list[list[Option]] = []
@@ -658,6 +671,19 @@ class Retriever:
         self.store.audit_read(self.actor, "search", None, q_len=len(query), results=len(out_items))
         return pkg
 
+    def _slot_facts(self, query: str) -> list[str]:
+        """Facts whose predicate answers what the question asks about ("who employs me" -> work_at), however it is worded."""
+        stems = {_stem(w) for w in _terms(query)}
+        preds: list[str] = []
+        for w, ps in _SLOT_INDEX.items():
+            if _stem(w) in stems:
+                preds += [p for p in sorted(ps) if p not in preds]
+        ix = self._ix()
+        out: list[str] = []
+        for p in preds:
+            out += ix.predicate_facts.get(p, [])[:5]
+        return list(dict.fromkeys(out))[:15]
+
     # ---- evidence gate -------------------------------------------------------------------
     def _term_df(self, term: str, table: str = "memories") -> int:
         """In how many (visible) memories / messages does this term occur? Cached per content generation."""
@@ -692,17 +718,27 @@ class Retriever:
     def _idf(self, term: str, n: int, table: str = "memories") -> float:
         return max(0.1, math.log((n + 1) / (self._term_df(term, table) + 0.5)))
 
+    @staticmethod
+    def _slot_words_of(f: Mapping[str, Any]) -> set[str]:
+        """The everyday words a memory's predicate, aspect and category answer to (company/city/database/tools...)."""
+        pred, _, aspect = str(f.get("predicate") or "").partition(":")
+        slot = _SLOT_WORDS.get(pred) or ("favourite favorite best like prefer " + pred.replace("_", " ") if pred.startswith("favo") else "")
+        extra = f"{slot} {_CATEGORY_WORDS.get(str(f.get('category')), '')} {aspect} {_ASPECT_WORDS.get(aspect, '')}"
+        return {_stem(w) for w in extra.split()}
+
     def _item_words(self, mid: str, statement: str) -> set[str]:
         ix = self._ix()
         words = {_stem(w) for w in re.findall(r"[a-z0-9+#]{2,}", statement.lower())}
         for e in ix.fact_entities.get(mid, ()):
             words |= {_stem(w) for w in re.findall(r"[a-z0-9+#]{2,}", ix.ent_name.get(e, "").lower())}
+        for older in ix.supersedes.get(mid, ())[:3]:  # a statement that replaces another is about the same thing (same slot words)
+            o = ix.facts.get(older)
+            if o is not None:
+                words |= {_stem(w) for w in re.findall(r"[a-z0-9+#]{2,}", str(o["statement"]).lower())}
+                words |= self._slot_words_of(o)
         f = ix.facts.get(mid)
         if f is not None:
-            pred = str(f.get("predicate") or "").split(":")[0]
-            slot = _SLOT_WORDS.get(pred) or ("favourite favorite best like prefer " + pred.replace("_", " ") if pred.startswith("favo") else "")
-            extra = f"{slot} {_CATEGORY_WORDS.get(str(f.get('category')), '')}"
-            words |= {_stem(w) for w in extra.split()}
+            words |= self._slot_words_of(f)
         return words
 
     def _support(
@@ -726,7 +762,8 @@ class Retriever:
         terms = list(dict.fromkeys(qterms))
         idf = {t: self._idf(t, n) for t in terms}
         total = sum(idf.values()) or 1.0
-        focus = max(idf, key=lambda t: idf[t]) if idf else None
+        top_idf = max(idf.values(), default=0.0)
+        focus = {t for t in idf if idf[t] >= top_idf - 1e-6}  # every term tied for most informative must be matched (no lucky tie-break)
         vec = dict(vec_hits)
         strong = {e for e, (_, st) in ents.items() if st >= 0.9}
         ent_pool = {m for e in strong for m in ix.entity_facts.get(e, ())}
@@ -737,7 +774,6 @@ class Retriever:
         rem_total = sum(idf[t] for t in rem) or 1.0
         # a question about things we have never seen a word of ("pizza", "salary") must not be answered by whatever
         # happens to be attached to the entity it also names
-        rem_known = not rem or sum(self._term_df(t) > 0 or self._term_df(t, "messages") > 0 for t in rem) / len(rem) >= 0.5
         msg_cov = 0.0
         if terms and msg_hits:
             n_msg = self._n_docs("messages")
@@ -747,7 +783,7 @@ class Retriever:
                 have = {_stem(w) for w in re.findall(r"[a-z0-9+#]{2,}", mh["text"].lower())}
                 hit_terms = [t for t in terms if _term_in(t, have)]
                 dfs = [self._term_df(t, "messages") for t in hit_terms]
-                unique = sum(1 for d in dfs if d <= 3)  # an id-like token ("ZX0") that only a few messages contain
+                unique = sum(1 for t, d in zip(hit_terms, dfs, strict=True) if d <= 3 and any(ch.isdigit() for ch in t))  # an id-like token ("ZX0")
                 moderate = sum(1 for d in dfs if d <= max(8, 0.15 * n_msg))
                 # One topical word ("editor") is not enough to tie a project fact to a conversation; a near-unique token
                 # or two reasonably rare words are.
@@ -759,13 +795,9 @@ class Retriever:
             words = self._item_words(mid, it["statement"])
             matched = [t for t in terms if _term_in(t, words)]
             cov = sum(idf[t] for t in matched) / total if terms else 0.0
-            if terms and cov >= 0.5 and focus in matched:
+            if terms and cov >= 0.5 and focus <= set(matched):
                 out[mid] = f"lexical:{cov:.2f}"
-            elif mid in ent_pool and (
-                not rem
-                or sum(idf[t] for t in rem if t in matched) / rem_total >= 0.34
-                or (it["category"] in ("decision", "constraint", "project", "profile", "preference") and rem_known)
-            ):
+            elif mid in ent_pool and (not rem or sum(idf[t] for t in rem if t in matched) / rem_total >= 0.34):
                 out[mid] = f"entity:{cov:.2f}"
             elif msg_cov >= 0.6 and any(ch in ("bm25_msg", "hop") for ch in it["channels"]):
                 out[mid] = f"message:{msg_cov:.2f}"
@@ -899,7 +931,7 @@ class Retriever:
                     (e["ref"],),
                 ).fetchone()
                 if m:
-                    out.append({"kind": "message", "message_id": m["id"], "conversation_id": m["conversation_id"], "conversation": m["title"],
+                    out.append({"kind": "message", "message_id": m["id"], "conversation_id": m["conversation_id"], "conversation": safe_title(m["title"]),
                                 "ts": m["create_time"], "snippet": redact_secrets((e["quote"] or "")[:240])})  # fmt: skip
             else:
                 d = self.store.conn.execute("SELECT id, name, kind FROM documents WHERE id=?", (e["ref"],)).fetchone()

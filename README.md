@@ -74,8 +74,10 @@ Your official export (`membridge import`) later outranks the dump. Facts importe
 - *Ollama slow/timeouts*: lower `--window-chars`; it resumes where it stopped.
 
 ## Speed
-Memory calls are designed to be nearly free: **2.5 ms cold and ~20 µs repeated** on a real 2,000-message archive, **~3–6 ms cold on 5,000 conversations / 13k memories**
-(measured; see [`docs/EVAL.md`](docs/EVAL.md) §6). Mechanisms: content-generation cache, warm in-memory index, precomputed PageRank vectors, IDF-pruned full-text, vectorised packing.
+Memory calls are cheap: on a real 2,000-message archive a new question takes **~14 ms** (p50; p95 21 ms) and a repeated one **~30 µs**
+(measured after the v0.2 evidence gate, which costs ~11 ms per new question: it counts how rare each query word is; before it, a cold call was 2.5 ms).
+The 5,000-conversation / 13k-memory figures in [`docs/EVAL.md`](docs/EVAL.md) §6 (3-6 ms cold) predate the gate and have not been re-measured.
+Mechanisms: content-generation cache, warm in-memory index, precomputed PageRank vectors, IDF-pruned full-text, vectorised packing.
 Run `uv run python eval/latency.py real` to measure your own store.
 
 ## Encryption and backups
@@ -91,7 +93,7 @@ Run `uv run python eval/latency.py real` to measure your own store.
 - Benchmarks are synthetic; no precision/recall is claimed on real data until you judge answers with `membridge gold-init` / `eval-real`.
 - Verified clients: Claude Code, the Python MCP SDK client, and the official MCP Inspector CLI. Cursor/VS Code/opencode configs are provided but unverified; hosted/ChatGPT connectors are untested.
 - The live database is plaintext while unlocked (no SQLCipher build for Windows); encrypted backups/exports and `lock`/`unlock` are provided. An assistant that can run shell commands as you can read the file directly: the PIN protects the MCP/dashboard path, `lock` protects the file.
-- The answer-or-abstain gate is measured on a synthetic persona (30 answerable / 30 unanswerable questions: 30/30 unanswerable declined, 29/30 answerable answered; the miss needs world knowledge that Rust is a programming language, i.e. the optional embedder). It has not been scored on your real data until you judge answers with `gold-init` / `eval-real`.
+- The answer-or-abstain gate is measured on a synthetic persona (33 answerable / 34 unanswerable questions: 34/34 unanswerable declined, 32/33 answerable answered; the miss needs world knowledge that Rust is a programming language, i.e. the optional embedder). It has not been scored on your real data until you judge answers with `gold-init` / `eval-real`.
 - The privacy detector is a pattern lexicon: it can miss unusual phrasing (use `mark-private`) and it over-flags on purpose.
 - Consolidation is ≈ n^1.3: 5,000 conversations take ~44 s (missed my 20 s target); your real archive takes under a second.
 - Import formats: ChatGPT, Claude, Claude Code sessions, Markdown/text notes.

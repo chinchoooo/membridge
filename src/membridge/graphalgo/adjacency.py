@@ -64,19 +64,20 @@ def _sql_neighbors(store: Store, ids: list[str], include_sensitive: bool = False
     if not ids:
         return []
     c = store.conn
+    ents = "live_entities" if include_sensitive else "visible_entities"
     sm = "" if include_sensitive else " AND m.sensitivity='normal'"
     sa = "" if include_sensitive else " AND a.sensitivity='normal' AND b.sensitivity='normal'"
     q = ",".join("?" * len(ids))
     out: list[tuple[str, str, str, float]] = []
     for r in c.execute(
         f"SELECT me.memory_id AS m, me.entity_id AS e, me.role AS role FROM memory_entities me "
-        f"JOIN memories m ON m.id=me.memory_id JOIN live_entities e ON e.id=me.entity_id "
+        f"JOIN memories m ON m.id=me.memory_id JOIN {ents} e ON e.id=me.entity_id "
         f"WHERE m.status!='deleted'{sm} AND (me.memory_id IN ({q}) OR me.entity_id IN ({q}))",
         ids + ids,
     ):
         out.append((r["m"], r["e"], "ABOUT", edge_weight("ABOUT", role=r["role"])))
     for r in c.execute(
-        f"SELECT x.entity_id AS e, x.conversation_id AS v, x.count AS n FROM entity_mentions x JOIN live_entities e ON e.id=x.entity_id "
+        f"SELECT x.entity_id AS e, x.conversation_id AS v, x.count AS n FROM entity_mentions x JOIN {ents} e ON e.id=x.entity_id "
         f"WHERE x.entity_id IN ({q}) OR x.conversation_id IN ({q})",
         ids + ids,
     ):

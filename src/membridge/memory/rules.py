@@ -78,6 +78,13 @@ _SKILL = re.compile(
     r"(?i:\b(?:i|we)\s+(?:use|work with|know|code in|program in|write)\s+)(?P<obj>[A-Z][\w.+#-]*(?:\s[A-Z][\w.+#-]*){0,2})"
     r"(?i:\s+(?:for|to|at)\b)",
 )  # fmt: skip
+_IMPERATIVE = re.compile(
+    r"^\s*(?:please\s+|kindly\s+)?(?:write|translate|draft|compose|rewrite|summari[sz]e|paraphrase|generate|create|make|edit|proofread|"
+    r"correct|fix|explain|describe|answer|list|find|add|convert|format|continue|pretend|imagine|act|role-?play|respond|reply|say|"
+    r"repeat|quote|check|review|improve|shorten|expand)\b",
+    re.IGNORECASE,
+)
+_REPORTED = re.compile(r"\b(?:said|says|wrote|writes|told|tells|asked|asks|texted|replied|claims?|claimed|according to|quote[sd]?)\b", re.IGNORECASE)
 _QUESTION_START = re.compile(
     r"^\s*(?:how|what|why|when|where|which|who|can|could|should|would|do|does|did|is|are|will|may|please|explain|help|tell|show)\b",
     re.IGNORECASE,
@@ -202,6 +209,18 @@ def extract_from_message(
         if contains_secret(sent):
             dropped += 1
             continue
+        fp = _FIRST_PERSON.search(sent)
+        if _IMPERATIVE.match(sent):
+            continue  # "Write a cover letter that says I work at Google." is a task, not a fact about the user
+        if fp:
+            rep = _REPORTED.search(sent)
+            if rep and _FIRST_PERSON.search(sent, rep.end()):
+                continue  # "My friend said: I work at Initech" / 'He told me "I use Rust"': somebody else's words
+            colon = sent.find(":")
+            if 0 < colon < fp.start() and not _FIRST_PERSON.search(sent[:colon]):
+                continue  # "Translate to French: I live in Berlin": material the user supplied, not their own statement
+            if sent[: fp.start()].count('"') % 2 == 1 or sent[: fp.start()].count("\u201c") > sent[: fp.start()].count("\u201d"):
+                continue  # inside quotation marks
         ents = find_entities(sent, known)
         is_corr = bool(_CORRECTION.match(sent))
 

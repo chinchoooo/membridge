@@ -17,7 +17,7 @@ from .models import sha
 
 def _title(store: Store, members: list[str]) -> str:
     rows = store.conn.execute(
-        f"SELECT e.name, (SELECT COUNT(*) FROM memory_entities me WHERE me.entity_id=e.id) AS n FROM live_entities e "
+        f"SELECT e.name, (SELECT COUNT(*) FROM memory_entities me WHERE me.entity_id=e.id) AS n FROM visible_entities e "
         f"WHERE e.id IN ({','.join('?' * len(members))}) ORDER BY n DESC, e.name LIMIT 3",
         members,
     ).fetchall()

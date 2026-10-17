@@ -122,6 +122,7 @@ class Store:
         self.lock = threading.RLock()  # callers (MemoryService) serialise access to the shared connection
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA secure_delete=ON")  # freed pages are zeroed: a forgotten memory does not linger in the file
         self.conn.execute("PRAGMA synchronous=NORMAL")  # safe in WAL mode; avoids an fsync per commit
         self.conn.execute("PRAGMA cache_size=-65536")  # 64 MB page cache
         self.conn.execute("PRAGMA mmap_size=268435456")  # memory-map up to 256 MB: reads skip a copy

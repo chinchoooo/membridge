@@ -408,6 +408,15 @@ def _outrank(store: Store, winner: str, loser: str, reason: str) -> None:
     rescore(store, loser)
 
 
+def _pending(store: Store, claim: str, standing: str, reason: str) -> None:
+    """A less trusted but NEWER claim contradicts something the user stands behind. The user's statement stays current;
+    only the claim waits for the person (so a connected assistant cannot take your own statements out of circulation)."""
+    _link(store, claim, "CONTRADICTS", standing, reason)
+    revision(store, claim, "consolidator", f"pending: {reason}")
+    store.conn.execute("UPDATE memories SET status='unresolved', updated_at=? WHERE id=?", (time.time(), claim))
+    rescore(store, claim)
+
+
 def _unresolved(store: Store, a: str, b: str, reason: str) -> None:
     _link(store, a, "CONTRADICTS", b, reason)
     for m in (a, b):
@@ -416,12 +425,37 @@ def _unresolved(store: Store, a: str, b: str, reason: str) -> None:
         rescore(store, m)
 
 
-def _same_value(a: str, b: str) -> bool:
-    """'Acme' and 'Acme Corp' are one employer; 'Postgres' and 'MySQL' are two databases."""
-    if a == b:
+_ORG_SUFFIXES = {
+    "inc", "corp", "corporation", "ltd", "limited", "llc", "co", "company", "gmbh", "labs", "lab", "technologies", "systems",
+    "university", "institute", "group", "robotics",
+}  # fmt: skip
+
+
+def _alias_key(store: Store | None, value: str) -> str:
+    """'Postgres' and 'PostgreSQL' (and 'pg') are one value: the curated alias table and any entity merge the user made."""
+    from ..resolve.blocking import compact
+    from ..resolve.score import ALIAS_DICT
+
+    k = compact(value)
+    if store is not None:
+        row = store.conn.execute(
+            "SELECT e.canonical FROM entity_aliases a JOIN live_entities e ON e.id=a.entity_id WHERE a.alias_norm=? LIMIT 1", (value,)
+        ).fetchone()
+        if row is not None:
+            return compact(str(row[0]))
+    return ALIAS_DICT.get(k, k)
+
+
+def _same_value(a: str, b: str, store: Store | None = None) -> bool:
+    """'Acme' and 'Acme Corp' are one employer, 'Postgres' and 'PostgreSQL' one database; 'Visual Studio' and 'Visual Studio Code'
+    are two editors, and 'Postgres' and 'MySQL' two databases."""
+    if a == b or _alias_key(store, a) == _alias_key(store, b):
         return True
     ta, tb = set(a.split()), set(b.split())
-    return bool(ta) and bool(tb) and (ta <= tb or tb <= ta)
+    if not ta or not tb or not (ta <= tb or tb <= ta):
+        return False
+    extra = (tb - ta) if ta <= tb else (ta - tb)
+    return extra <= _ORG_SUFFIXES  # only a corporate suffix is allowed to be the difference
 
 
 def remembered_resolution(store: Store, subject: str, predicate: str, a_obj: str, b_obj: str) -> str | None:
@@ -464,7 +498,7 @@ def _arbitrate(store: Store, new_id: str, old: sqlite3.Row, c: Candidate, kind: 
         low_verif = old["verification"] if new_wins else c.verification
         low_ts, high_ts = (old_ts, new_ts) if new_wins else (new_ts, old_ts)
         if low_verif == "client_asserted" and both and low_ts is not None and high_ts is not None and low_ts > high_ts:
-            _unresolved(store, new_id, old_id, "newer_agent_claim_vs_more_trusted")
+            _pending(store, old_id if new_wins else new_id, new_id if new_wins else old_id, "newer_agent_claim_vs_more_trusted")
         elif new_wins:
             _outrank(store, new_id, old_id, "outranked_by_trust")
         else:
@@ -508,7 +542,7 @@ def _resolve_conflicts(store: Store, new_id: str, c: Candidate) -> None:
         # A project uses many technologies: only the same *aspect* (predicate "uses:storage") is replaced,
         # or anything the user explicitly switched away from ("switched X from A to B").
         explicit = c.old_object is not None and canonical(c.old_object) == old_obj and old["predicate"].split(":")[0] == base
-        if (base in _SUPERSEDABLE or single_valued(c.predicate)) and not _same_value(old_obj, new_obj) and (
+        if (base in _SUPERSEDABLE or single_valued(c.predicate)) and not _same_value(old_obj, new_obj, store) and (
             old["predicate"] == c.predicate or explicit
         ):
             reason = "correction" if c.correction else "explicit_switch" if explicit else {

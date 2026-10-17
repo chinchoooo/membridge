@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -219,17 +220,25 @@ def ask(
     store.close()
 
 
-def _require_pin(store: Store) -> None:
-    """Hidden prompt for the PIN. A program running this command without a terminal cannot answer it."""
+def _hidden(prompt: str) -> str:
+    """A hidden prompt that only a person at a terminal can answer: stdin must be a real TTY (getpass quietly falls back
+    to reading a pipe on some platforms, which would let a program feed it)."""
     import getpass
 
+    if not sys.stdin.isatty():
+        raise EOFError("this needs an interactive terminal")
+    return getpass.getpass(prompt)
+
+
+def _require_pin(store: Store) -> None:
+    """Hidden prompt for the PIN. A program running this command without a terminal cannot answer it."""
     from .memory import access
 
     if not access.has_pin(store):
         typer.secho("No PIN is set yet: run `membridge set-pin` first.", fg=typer.colors.RED, err=True)
         raise typer.Exit(2)
     try:
-        ok = access.verify_pin(store, getpass.getpass("PIN: "))
+        ok = access.verify_pin(store, _hidden("PIN: "))
     except (access.AccessError, EOFError, OSError) as e:
         typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(2) from e
@@ -247,15 +256,13 @@ def _human_service(settings: Settings):  # type: ignore[no-untyped-def]
 @app.command("set-pin")
 def set_pin() -> None:
     """Set or change the PIN that guards private memories (health, money, family...). Typed at a hidden prompt."""
-    import getpass
-
     from .memory import access
 
     store = Store(Settings().db_path)
     try:
-        old = getpass.getpass("Current PIN: ") if access.has_pin(store) else None
-        new = getpass.getpass("New PIN (6+ characters): ")
-        if getpass.getpass("Repeat PIN: ") != new:
+        old = _hidden("Current PIN: ") if access.has_pin(store) else None
+        new = _hidden("New PIN (6+ characters): ")
+        if _hidden("Repeat PIN: ") != new:
             raise access.AccessError("the PINs do not match")
         access.set_pin(store, new, old)
     except (access.AccessError, EOFError, OSError) as e:
@@ -271,13 +278,11 @@ def grant_sensitive(
     uses: Annotated[int, typer.Option(help="How many private reads it allows")] = 25,
 ) -> None:
     """Let ONE assistant read private memories for a short time. Needs your PIN (hidden prompt)."""
-    import getpass
-
     from .memory import access
 
     store = Store(Settings().db_path)
     try:
-        out = access.create_grant(store, getpass.getpass("PIN: "), client, minutes, uses)
+        out = access.create_grant(store, _hidden("PIN: "), client, minutes, uses)
     except (access.AccessError, EOFError, OSError) as e:
         typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(2) from e
@@ -307,7 +312,10 @@ def mark_private(
     public: Annotated[bool, typer.Option("--public", help="Make it visible to assistants again")] = False,
 ) -> None:
     """Hide a memory from every assistant (or, with --public, show it again). The automatic detector can miss things."""
-    svc = _human_service(Settings())
+    settings = Settings()
+    if public:  # showing something to assistants again is the sensitive direction
+        _require_pin(Store(settings.db_path))
+    svc = _human_service(settings)
     typer.echo(json.dumps(svc.set_private(memory_id, not public)))
 
 
@@ -410,6 +418,9 @@ def export(
 
     settings = Settings()
     store = Store(settings.db_path)
+    if sensitive:  # a file with private memories in it is the sensitive direction: the PIN, at a terminal
+        _require_pin(store)
+        store.audit_sync("cli", "sensitive_access", "export")
     out = export_memory(store, settings.data_dir / "exports", fmt, include_raw=raw, include_sensitive=sensitive)
     out["path"] = _secure(out["path"], encrypt, passphrase_env)
     out["encrypted"] = encrypt
@@ -484,7 +495,8 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
     token = os.environ.get("MEMBRIDGE_DASHBOARD_TOKEN") or secrets.token_urlsafe(24)
     os.environ["MEMBRIDGE_DASHBOARD_TOKEN"] = token  # the app factory below reads it
     typer.echo(f"\nOpen the dashboard (this link carries this launch's access token):\n  http://{host}:{port}/?token={token}\n")
-    uvicorn.run("membridge.api.app:create_app", factory=True, host=host, port=port, log_level="info")
+    # access_log off: the first request carries ?token=... and must not be written to a log file
+    uvicorn.run("membridge.api.app:create_app", factory=True, host=host, port=port, log_level="info", access_log=False)
 
 
 @app.command()

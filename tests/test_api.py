@@ -151,14 +151,36 @@ def test_cross_origin_requests_are_refused(client: TestClient) -> None:
     assert client.get("/api/overview", headers={"host": "testserver"}).status_code == 403  # not on the allow-list unless a test adds it
 
 
-def test_private_memories_are_hidden_from_listings_until_asked(client: TestClient) -> None:
-    c = client.post("/api/memories", json={"content": "I was diagnosed with an anxiety disorder", "category": "health", "source": "user_stated"}, headers=H)
-    assert c.status_code == 200
-    mid = c.json()["memory_id"]
-    assert all(i["id"] != mid for i in client.get("/api/memories", params={"limit": 200}).json()["items"])
+def test_private_memories_need_the_pin_even_with_the_dashboard_token(client: TestClient) -> None:
+    mid = client.post("/api/memories", json={"content": "I was diagnosed with an anxiety disorder", "category": "health", "source": "user_stated"}, headers=H).json()["memory_id"]
+    assert all(i["id"] != mid for i in client.get("/api/memories", params={"limit": 200}).json()["items"])  # hidden by default
+    # the token (which a log or a neighbouring process could expose) is not enough to see them
+    assert client.get("/api/memories", params={"show_private": True}).status_code == 403
+    assert client.get(f"/api/memories/{mid}").status_code == 403
+    assert client.get("/api/conversations/x", params={"show_private": True}).status_code == 403
+    assert client.post("/api/export", json={"include_sensitive": True}, headers=H).status_code == 403
+    assert client.post(f"/api/memories/{mid}/private", json={"private": False}, headers=H).status_code == 403
+    assert client.post("/api/private/unlock", json={"pin": "246810"}, headers=H).status_code == 400  # no PIN set yet
+    assert client.post("/api/private/pin", json={"new_pin": "246810"}, headers=H).status_code == 200
+    assert client.post("/api/private/unlock", json={"pin": "wrong-pin"}, headers=H).status_code == 400
+    assert client.get("/api/memories", params={"show_private": True}).status_code == 403  # a wrong PIN opens nothing
+    ok = client.post("/api/private/unlock", json={"pin": "246810"}, headers=H)
+    assert ok.status_code == 200 and "httponly" in ok.headers["set-cookie"].lower() and "samesite=strict" in ok.headers["set-cookie"].lower()
     assert any(i["id"] == mid for i in client.get("/api/memories", params={"limit": 200, "show_private": True}).json()["items"])
-    assert client.get(f"/api/memories/{mid}").json()["memory"]["id"] == mid  # opening one deliberately is allowed for the user
+    assert client.get(f"/api/memories/{mid}").json()["memory"]["id"] == mid
+    assert client.post("/api/export", json={"include_sensitive": True}, headers=H).status_code == 200
     assert client.get("/api/audit/verify").json()["ok"] is True
+    assert client.post("/api/private/lock", headers=H).status_code == 200  # locking ends the session at once
+    client.cookies.delete("mb_priv")
+    assert client.get("/api/memories", params={"show_private": True}).status_code == 403
+
+
+def test_a_forged_or_expired_private_cookie_opens_nothing(client: TestClient) -> None:
+    client.post("/api/private/pin", json={"new_pin": "246810"}, headers=H)
+    client.cookies.set("mb_priv", "9999999999.deadbeef")
+    assert client.get("/api/memories", params={"show_private": True}).status_code == 403
+    client.cookies.set("mb_priv", "1.deadbeef")
+    assert client.get("/api/memories", params={"show_private": True}).status_code == 403
 
 
 def test_pin_grant_and_revoke_flow(client: TestClient) -> None:

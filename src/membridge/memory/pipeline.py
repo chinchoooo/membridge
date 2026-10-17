@@ -198,7 +198,10 @@ def purge_claude_seeds(store: Store) -> int:
             "  WHERE e.memory_id=m.id AND (e.ref_kind!='document' OR d.kind NOT IN ('claude_memory','claude_project')))"
         )
     ]
+    partners: set[str] = set()
     for mid in ids:
+        for r in c.execute("SELECT src_id, dst_id FROM memory_links WHERE rel='CONTRADICTS' AND (src_id=? OR dst_id=?)", (mid, mid)):
+            partners |= {r[0], r[1]}
         for sql in (
             "DELETE FROM memory_evidence WHERE memory_id=?", "DELETE FROM memories_fts WHERE memory_id=?",
             "DELETE FROM memory_entities WHERE memory_id=?", "DELETE FROM memory_links WHERE src_id=? OR dst_id=?",
@@ -206,6 +209,9 @@ def purge_claude_seeds(store: Store) -> int:
             "DELETE FROM memory_revisions WHERE memory_id=?", "DELETE FROM memories WHERE id=?",
         ):  # fmt: skip
             c.execute(sql, (mid, mid) if sql.count("?") == 2 else (mid,))
+    for p in partners - set(ids):  # its conflict is gone with the purged memory: it is simply current again
+        if c.execute("SELECT 1 FROM memory_links WHERE rel='CONTRADICTS' AND (src_id=? OR dst_id=?)", (p, p)).fetchone() is None:
+            c.execute("UPDATE memories SET status='current' WHERE id=? AND status='unresolved'", (p,))
     c.commit()
     return len(ids)
 

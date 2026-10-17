@@ -119,7 +119,7 @@ def build_server(service: MemoryService, export_dir: Any, client: str = "mcp") -
 
     @mcp.tool(annotations=WRITE)
     def record_decision(project: str, decision: str, rationale: str = "", alternatives: list[str] | None = None) -> dict[str, Any]:
-        """Record a project decision. A newer decision on the same project supersedes the old one; history is kept."""
+        """Record a project decision (stored as your claim, not as verified by the user). A newer decision on the same aspect supersedes an earlier assistant-recorded one; if the user stated a different choice themselves, theirs stays current and yours waits for them. History is kept."""
         return service.record_decision(project, decision, rationale, alternatives, client)
 
     @mcp.tool(annotations=WRITE)

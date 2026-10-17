@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from ..config import Settings
 from ..importers.service import ImportError_, run_import
+from ..memory import access
 from ..memory.service import MemoryService, ServiceError
 from ..ops import backup as do_backup
 from ..ops import export_memory, health
@@ -34,6 +35,8 @@ from ..store.sqlite import Store
 
 MUTATING_HEADER = "x-membridge"
 COOKIE = "mb_token"
+PRIV_COOKIE = "mb_priv"  # proof that the PIN was entered recently
+PRIV_TTL = 600
 LOOPBACK = frozenset({"127.0.0.1", "localhost", "[::1]"})
 
 
@@ -107,6 +110,10 @@ class PrivateIn(BaseModel):
     private: bool = True
 
 
+class UnlockIn(BaseModel):
+    pin: str = Field(min_length=1, max_length=200)
+
+
 class RevokeIn(BaseModel):
     client: str | None = Field(None, max_length=80)
 
@@ -130,6 +137,23 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
     app.state.token = access_token
     app.state.store, app.state.svc = store, svc
     hosts = LOOPBACK | extra_hosts
+
+    def priv_cookie() -> str:
+        exp = int(time.time()) + PRIV_TTL
+        return f"{exp}.{hmac.new(access_token.encode(), f'priv:{exp}'.encode(), 'sha256').hexdigest()}"
+
+    def require_private_session(request: Request) -> None:
+        """Seeing private memories in the dashboard needs the PIN, typed within the last ten minutes. The dashboard token
+        alone (which a log or a neighbouring process could expose) is not enough."""
+        v = request.cookies.get(PRIV_COOKIE, "")
+        try:
+            exp_s, sig = v.split(".", 1)
+            ok = int(exp_s) > time.time() and hmac.compare_digest(
+                sig, hmac.new(access_token.encode(), f"priv:{int(exp_s)}".encode(), "sha256").hexdigest())
+        except ValueError:
+            ok = False
+        if not ok:
+            raise HTTPException(403, "Private memories need your PIN: unlock them in Maintenance -> Private memories.")
 
     def authorised(request: Request) -> bool:
         bearer = request.headers.get("authorization", "")
@@ -185,8 +209,10 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
 
     # ---- memories ------------------------------------------------------------------
     @app.get("/api/memories")
-    def memories(q: str = "", category: str = "", status: str = "", verification: str = "", limit: int = 50, offset: int = 0,
+    def memories(request: Request, q: str = "", category: str = "", status: str = "", verification: str = "", limit: int = 50, offset: int = 0,
                  show_private: bool = False) -> dict[str, Any]:  # fmt: skip
+        if show_private:
+            require_private_session(request)
         limit = max(1, min(limit, 200))
         with store.lock:
             if q.strip():
@@ -205,7 +231,10 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
         return {"items": [dict(r) for r in rows], "total": total}
 
     @app.get("/api/memories/{memory_id}")
-    def memory_detail(memory_id: str) -> dict[str, Any]:
+    def memory_detail(memory_id: str, request: Request) -> dict[str, Any]:
+        row = store.conn.execute("SELECT sensitivity FROM memories WHERE id=? AND status!='deleted'", (memory_id,)).fetchone()
+        if row is not None and row["sensitivity"] != "normal":
+            require_private_session(request)
         return {"memory": svc.get_memory(memory_id, True), "provenance": svc.trace_memory_provenance(memory_id, True),
                 "related": svc.get_related_memories(memory_id, 1, True)}
 
@@ -218,7 +247,9 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
         return svc.update_memory(memory_id, body.changes, body.reason, actor="dashboard")
 
     @app.post("/api/memories/{memory_id}/private")
-    def memory_private(memory_id: str, body: PrivateIn) -> dict[str, Any]:
+    def memory_private(memory_id: str, body: PrivateIn, request: Request) -> dict[str, Any]:
+        if not body.private:
+            require_private_session(request)  # making something visible to assistants again is the sensitive direction
         return svc.set_private(memory_id, body.private)
 
     @app.delete("/api/memories/{memory_id}")
@@ -251,7 +282,9 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
         return svc.get_project_context(name)
 
     @app.get("/api/conversations/{cid}")
-    def conversation(cid: str, show_private: bool = False) -> dict[str, Any]:
+    def conversation(cid: str, request: Request, show_private: bool = False) -> dict[str, Any]:
+        if show_private:
+            require_private_session(request)
         return svc.get_conversation(cid, 120, show_private)
 
     @app.get("/api/contradictions")
@@ -305,6 +338,26 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
     @app.get("/api/private/status")
     def private_status() -> dict[str, Any]:
         return svc.list_grants()
+
+    @app.post("/api/private/unlock")
+    def private_unlock(body: UnlockIn) -> JSONResponse:
+        if not access.has_pin(store):
+            raise HTTPException(400, "set a PIN first")
+        try:
+            ok = access.verify_pin(store, body.pin)
+        except access.AccessError as e:
+            raise HTTPException(400, str(e)) from e
+        if not ok:
+            raise HTTPException(400, "wrong PIN")
+        r = JSONResponse({"unlocked_for_seconds": PRIV_TTL})
+        r.set_cookie(PRIV_COOKIE, priv_cookie(), httponly=True, samesite="strict", path="/", max_age=PRIV_TTL)
+        return r
+
+    @app.post("/api/private/lock")
+    def private_lock() -> JSONResponse:
+        r = JSONResponse({"locked": True})
+        r.delete_cookie(PRIV_COOKIE, path="/")
+        return r
 
     @app.post("/api/private/pin")
     def private_pin(body: PinIn) -> dict[str, Any]:
@@ -371,7 +424,9 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
             return do_backup(store, s.data_dir / "backups")
 
     @app.post("/api/export")
-    def export(body: ExportIn) -> dict[str, Any]:
+    def export(body: ExportIn, request: Request) -> dict[str, Any]:
+        if body.include_sensitive:
+            require_private_session(request)
         with store.lock:
             return export_memory(store, s.data_dir / "exports", body.format, include_raw=body.include_raw, include_sensitive=body.include_sensitive)
 

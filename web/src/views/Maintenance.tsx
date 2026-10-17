@@ -32,6 +32,7 @@ function PrivateAccess({ onOpenMemory }: Props) {
   const [oldPin, setOldPin] = useState("");
   const [newPin, setNewPin] = useState("");
   const [pin, setPin] = useState("");
+  const [viewPin, setViewPin] = useState("");
   const [client, setClient] = useState("claude-code");
   const [minutes, setMinutes] = useState(10);
   const [uses, setUses] = useState(25);
@@ -63,6 +64,14 @@ function PrivateAccess({ onOpenMemory }: Props) {
           Grant access
         </button>
         <button onClick={() => api("/api/private/revoke", { method: "POST", body: {} }).then(done("All access revoked")).catch(fail)}>Revoke all</button>
+      </div>
+      <div className="filters">
+        <b>View private memories here</b>
+        <input type="password" placeholder="PIN" value={viewPin} onChange={(e) => setViewPin(e.target.value)} />
+        <button disabled={!st?.pin_set || !viewPin} onClick={() => api("/api/private/unlock", { method: "POST", body: { pin: viewPin } }).then(() => { setViewPin(""); setMsg("Private memories unlocked in this dashboard for 10 minutes. Tick “show private” in Memories."); setErr(""); }).catch(fail)}>
+          Unlock for 10 minutes
+        </button>
+        <button onClick={() => api("/api/private/lock", { method: "POST", body: {} }).then(() => { setMsg("Private view locked."); setErr(""); }).catch(fail)}>Lock now</button>
       </div>
       {msg && <p className="muted">{msg}</p>}
       {err && <p className="error">{err}</p>}

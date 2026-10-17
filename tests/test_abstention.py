@@ -71,6 +71,9 @@ ANSWERABLE = [
     ("What did I decide about Orbit deployment?", "Fly.io"),
     ("What storage did I choose for Atlas?", "SQLite"),
     ("What tools do I use?", "Docker"),
+    ("Which database did I pick for Atlas?", "SQLite"),  # added after the second review: "pick" is not "decide"
+    ("Who employs me?", "Acme Robotics"),
+    ("What is my job?", "Acme Robotics"),
 ]
 
 UNANSWERABLE = [
@@ -104,6 +107,10 @@ UNANSWERABLE = [
     "Which Kubernetes version does Atlas run?",
     "What is the Orbit pricing plan?",
     "Which cloud provider hosts the Atlas demo?",
+    "How much does Atlas cost per month?",  # added after the second review: names a known project, asks for an unknown thing
+    "Who is the Atlas product manager?",
+    "Where is the park?",
+    "Rex",
 ]
 
 

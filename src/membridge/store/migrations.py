@@ -224,6 +224,28 @@ def _m7_trust_and_visibility(conn: sqlite3.Connection) -> None:
             conn.executemany(f"UPDATE {table} SET sensitivity='sensitive' WHERE {pk}=?", flag[i : i + 500])
 
 
+def _m8_visible_entities(conn: sqlite3.Connection) -> None:
+    """An entity that exists only through private memories is itself private (its name says what the memory says).
+
+    * visible_entities: live entities with at least one normal, live memory, or with no live memory at all.
+    * Rows an assistant saved as `user_stated` under v0.1 (it could) become `client_asserted`; the dashboard's own are kept.
+    * Community summaries are rebuilt on the next consolidation (they were built with the old entity set).
+    """
+    conn.execute("DROP VIEW IF EXISTS visible_entities")
+    conn.execute(
+        "CREATE VIEW visible_entities AS SELECT e.* FROM live_entities e WHERE "
+        "EXISTS (SELECT 1 FROM memory_entities me JOIN memories m ON m.id=me.memory_id "
+        "        WHERE me.entity_id=e.id AND m.status!='deleted' AND m.sensitivity='normal') "
+        "OR NOT EXISTS (SELECT 1 FROM memory_entities me JOIN memories m ON m.id=me.memory_id "
+        "               WHERE me.entity_id=e.id AND m.status!='deleted')"
+    )
+    conn.execute(
+        "UPDATE memories SET verification='client_asserted' WHERE origin='client' AND verification='user_stated' "
+        "AND extraction_method NOT IN ('client:dashboard','client:cli')"
+    )
+    conn.execute("DELETE FROM summaries WHERE level IN ('community-L1','community-L2')")
+
+
 MIGRATIONS: list[tuple[int, str, Migration]] = [
     (1, "baseline (v1 schema from sqlite.py/memory_schema.py)", lambda c: None),
     (2, "bitemporal facts, triples, aliases, merges, relations, communities, embeddings", _m2_bitemporal_and_graph_tables),
@@ -232,6 +254,7 @@ MIGRATIONS: list[tuple[int, str, Migration]] = [
     (5, "materialised entity co-occurrence", _m5_cooccurrence),
     (6, "generation counter triggers + PPR cache tables", _m6_generation),
     (7, "trust tiers, raw-text sensitivity, sensitive grants, audit hash chain", _m7_trust_and_visibility),
+    (8, "visible_entities view, v0.1 agent-forged trust, community summaries rebuilt", _m8_visible_entities),
 ]
 LATEST = MIGRATIONS[-1][0]
 

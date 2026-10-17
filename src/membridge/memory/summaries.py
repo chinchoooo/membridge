@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 
 from ..store.sqlite import Store
-from .models import sha
+from .models import safe_title, sha
 
 
 def _put(store: Store, level: str, ref: str, text: str, source_hash: str) -> bool:
@@ -17,9 +17,9 @@ def _put(store: Store, level: str, ref: str, text: str, source_hash: str) -> boo
     row = store.conn.execute(
         "SELECT source_hash, method FROM summaries WHERE id=?", (sid,)
     ).fetchone()
-    if row is not None and (
-        row["source_hash"] == source_hash or row["method"] == "llm"
-    ):
+    # an LLM-written summary is kept only while the facts it summarised are unchanged: a polished summary must not
+    # outlive the removal of a fact from the set it was written from (forgotten, or made private)
+    if row is not None and row["source_hash"] == source_hash:
         return False
     store.conn.execute(
         "INSERT OR REPLACE INTO summaries(id, level, ref, text, source_hash, method, updated_at) VALUES (?,?,?,?,?,'extractive',?)",
@@ -52,7 +52,7 @@ def refresh_summaries(store: Store, *, only_projects: set[str] | None = None) ->
             first["text"][:200] if first else "",
             *[f"{m['id']}{m['updated_at']}" for m in mems],
         )
-        lines = [f"{conv['title'] or 'Untitled'} ({conv['message_count']} messages)"]
+        lines = [f"{safe_title(conv['title']) or 'Untitled'} ({conv['message_count']} messages)"]
         if first:
             lines.append("Opens with: " + first["text"][:200].replace("\n", " "))
         lines += [f"- {m['statement'][:160]}" for m in mems]
@@ -60,7 +60,7 @@ def refresh_summaries(store: Store, *, only_projects: set[str] | None = None) ->
             store, "conversation", conv["id"], "\n".join(lines), sh
         )
     # project level: current memories about the project entity, plus history count
-    for e in c.execute("SELECT id, name FROM live_entities WHERE type='project'").fetchall():
+    for e in c.execute("SELECT id, name FROM visible_entities WHERE type='project'").fetchall():
         if only_projects is not None and e["id"] not in only_projects:
             continue
         mems = c.execute(

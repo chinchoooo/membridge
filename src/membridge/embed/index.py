@@ -30,7 +30,7 @@ def _texts(store: Store, kind: str) -> dict[str, str]:
         return {r[0]: r[1] for r in c.execute("SELECT id, statement FROM memories WHERE status!='deleted' AND sensitivity='normal'")}
     if kind == "entity":
         out = {}
-        for e in c.execute("SELECT id, name FROM live_entities"):
+        for e in c.execute("SELECT id, name FROM visible_entities"):
             aliases = [r[0] for r in c.execute("SELECT alias_norm FROM entity_aliases WHERE entity_id=?", (e["id"],))]
             out[e["id"]] = e["name"] + (" (" + ", ".join(a for a in aliases if a != e["name"].lower())[:120] + ")" if len(aliases) > 1 else "")
         return out

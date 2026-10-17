@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ..llm.base import LLM, LLMError
 from ..store.sqlite import Store
-from .consolidate import _link, _outrank, _supersede, _unresolved, rescore, revision, upsert
+from .consolidate import _link, _outrank, _pending, _supersede, rescore, revision, upsert
 from .models import CATEGORIES, Candidate, EntityRef, canonical, contains_secret, sensitivity_of, sha, trust_rank
 
 EXTRACTOR_PREFIX = "llm-1"
@@ -121,7 +121,8 @@ def extract_with_llm(
     for conv in store.conn.execute("SELECT id FROM conversations ORDER BY IFNULL(create_time,0), id").fetchall():
         rows = store.conn.execute(
             "SELECT m.id, m.text, m.create_time FROM messages m WHERE m.conversation_id=? AND m.role='user' "
-            "AND m.on_current_branch=1 AND LENGTH(m.text)>=20 AND m.id NOT IN "
+            + ("AND m.sensitivity='normal' " if llm.is_remote else "")  # private raw text never leaves the machine
+            + "AND m.on_current_branch=1 AND LENGTH(m.text)>=20 AND m.id NOT IN "
             "(SELECT message_id FROM extraction_state WHERE extractor=?) ORDER BY m.seq",
             (conv["id"], extractor),
         ).fetchall()
@@ -287,7 +288,7 @@ def classify_conflicts(store: Store, llm: LLM, *, max_pairs: int = 40) -> Classi
             # trusted is a connected agent's newer claim, which is the user's call.
             hi, lo = (a, b) if trust_rank(a["verification"]) > trust_rank(b["verification"]) else (b, a)
             if lo["verification"] == "client_asserted" and (lo["valid_at"] or 0) > (hi["valid_at"] or 0):
-                _unresolved(store, lo["id"], hi["id"], "llm_newer_agent_claim_vs_more_trusted")
+                _pending(store, lo["id"], hi["id"], "llm_newer_agent_claim_vs_more_trusted")
             else:
                 _outrank(store, hi["id"], lo["id"], f"llm:{rel.relation}:trust")
             continue

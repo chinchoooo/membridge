@@ -24,7 +24,7 @@ from typing import Any
 from falkordb import FalkorDB  # type: ignore[import-untyped]
 
 from ..graphalgo.adjacency import Graph, load_from_graph
-from ..memory.models import LINK_RELS
+from ..memory.models import LINK_RELS, redact_secrets, safe_title
 from .sqlite import Store
 
 BATCH = 400
@@ -134,13 +134,14 @@ class GraphStore:
                 self.query(f"MATCH ()-[x:{rel}]->() DELETE x")
 
         self.query("MATCH (c:Community) DETACH DELETE c")  # derived: re-projected below
-        gone_entities = [r["id"] for r in rows("SELECT id FROM entities WHERE merged_into IS NOT NULL")]
-        if gone_entities:
+        gone_entities = [r["id"] for r in rows("SELECT e.id FROM entities e WHERE e.merged_into IS NOT NULL "
+                                               "OR (e.merged_into IS NULL AND e.id NOT IN (SELECT id FROM visible_entities))")]  # fmt: skip
+        if gone_entities:  # merged away, or an entity that exists only through private memories
             self.query("MATCH (e:Entity) WHERE e.id IN $ids DETACH DELETE e", {"ids": gone_entities})
         run(
             "UNWIND $rows AS r MERGE (e:Entity {id:r.id}) SET e.name=r.name, e.type=r.type, e.canonical=r.canonical, e.aliases=r.aliases",
             rows("SELECT e.id, e.name, e.type, e.canonical, IFNULL((SELECT group_concat(alias_norm,' ') FROM entity_aliases a "
-                 "WHERE a.entity_id=e.id),'') AS aliases FROM live_entities e"), "entities",
+                 "WHERE a.entity_id=e.id),'') AS aliases FROM visible_entities e"), "entities",
         )  # fmt: skip
         gone = [r["id"] for r in rows(f"SELECT m.id FROM memories m WHERE (m.status='deleted' OR m.sensitivity!='normal'){flt}")]
         if gone:
@@ -158,21 +159,23 @@ class GraphStore:
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MERGE (v:Conversation {id:r.id}) SET v.title=r.title, v.ts=r.ts",
-            rows("SELECT id, IFNULL(title,'') AS title, IFNULL(create_time,0) AS ts FROM conversations"), "conversations",
+            [{**r, "title": safe_title(r["title"])} for r in rows("SELECT id, IFNULL(title,'') AS title, IFNULL(create_time,0) AS ts FROM conversations")],
+            "conversations",
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MERGE (g:Message {id:r.id}) SET g.role=r.role, g.ts=r.ts, g.snippet=r.snippet "
             "WITH g, r MATCH (v:Conversation {id:r.cid}) MERGE (g)-[:PART_OF]->(v)",
-            rows("SELECT DISTINCT g.id, g.role, IFNULL(g.create_time,0) AS ts, SUBSTR(g.text,1,200) AS snippet, "
-                 "g.conversation_id AS cid FROM messages g JOIN memory_evidence e ON e.ref=g.id "
-                 f"JOIN memories m ON m.id=e.memory_id WHERE m.status!='deleted'{vis}{flt}"), "messages",
+            [{**r, "snippet": redact_secrets(r["snippet"])} for r in rows(
+                "SELECT DISTINCT g.id, g.role, IFNULL(g.create_time,0) AS ts, SUBSTR(g.text,1,200) AS snippet, "
+                "g.conversation_id AS cid FROM messages g JOIN memory_evidence e ON e.ref=g.id "
+                f"JOIN memories m ON m.id=e.memory_id WHERE g.sensitivity='normal' AND m.status!='deleted'{vis}{flt}")], "messages",
         )  # fmt: skip
         run("UNWIND $rows AS r MERGE (s:Source {id:r.id}) SET s.name=r.name, s.kind=r.kind", rows("SELECT d.id, d.name, d.kind FROM documents d"))
         live = f"m.status!='deleted'{vis}{flt}"
         run(
             "UNWIND $rows AS r MATCH (m:Memory {id:r.m}), (e:Entity {id:r.e}) MERGE (m)-[x:ABOUT {role:r.role}]->(e)",
             rows("SELECT me.memory_id AS m, me.entity_id AS e, me.role AS role FROM memory_entities me "
-                 f"JOIN memories m ON m.id=me.memory_id JOIN live_entities le ON le.id=me.entity_id WHERE {live}"), "edges",
+                 f"JOIN memories m ON m.id=me.memory_id JOIN visible_entities le ON le.id=me.entity_id WHERE {live}"), "edges",
         )  # fmt: skip
         for tgt, kind in (("Message", "message"), ("Source", "document")):
             run(
@@ -191,7 +194,7 @@ class GraphStore:
         run(
             "UNWIND $rows AS r MATCH (e:Entity {id:r.e}), (v:Conversation {id:r.c}) MERGE (e)-[x:MENTIONED_IN]->(v) SET x.count=r.n",
             rows("SELECT x.entity_id AS e, x.conversation_id AS c, x.count AS n FROM entity_mentions x "
-                 "JOIN live_entities le ON le.id=x.entity_id"), "edges",
+                 "JOIN visible_entities le ON le.id=x.entity_id"), "edges",
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MATCH (a:Entity {id:r.a}), (b:Entity {id:r.b}) MERGE (a)-[x:RELATED_TO]->(b) SET x.weight=r.w",
@@ -221,7 +224,7 @@ class GraphStore:
         run(
             "UNWIND $rows AS r MATCH (e:Entity {id:r.e}), (c:Community {id:r.c}) MERGE (e)-[:MEMBER_OF]->(c)",
             rows("SELECT cm.entity_id AS e, cm.community_id AS c FROM community_members cm JOIN communities c ON c.id=cm.community_id "
-                 "JOIN live_entities le ON le.id=cm.entity_id WHERE c.level=1"), "edges",
+                 "JOIN visible_entities le ON le.id=cm.entity_id WHERE c.level=1"), "edges",
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MATCH (a:Community {id:r.a}), (b:Community {id:r.b}) MERGE (a)-[:CHILD_OF]->(b)",
@@ -229,7 +232,7 @@ class GraphStore:
         )  # fmt: skip
         run(
             "UNWIND $rows AS r MATCH (u:User {id:'user'}), (e:Entity {id:r.e}) MERGE (u)-[x:WORKED_ON]->(e)",
-            rows("SELECT DISTINCT e.id AS e FROM live_entities e WHERE e.type='project'"), "edges",
+            rows("SELECT DISTINCT e.id AS e FROM visible_entities e WHERE e.type='project'"), "edges",
         )  # fmt: skip
         return n
 

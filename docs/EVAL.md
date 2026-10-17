@@ -10,21 +10,22 @@ construction (the real archive has no ground-truth labels), so they show *which 
 
 | Variant | Pass | Recall@5 | MRR | nDCG@5 | p50 ms |
 |---|---|---|---|---|---|
-| A text only (BM25 over facts + messages) | 0.667 | 0.667 | 0.542 | 0.572 | 1.2 |
-| B + entity/hop channels (sum fusion) | 0.958 | 0.958 | 0.771 | 0.818 | 1.2 |
-| C + Personalized PageRank (sum fusion) | 1.000 | 1.000 | 0.844 | 0.883 | 2.1 |
-| D RRF fusion instead of sum | 1.000 | 1.000 | 0.812 | 0.858 | 1.5 |
-| E + MMR | 1.000 | 1.000 | 0.812 | 0.858 | 2.0 |
-| F + exact knapsack packing (ranking only) | 1.000 | 1.000 | 0.812 | 0.858 | 2.1 |
-| **G + evidence gate (production)** | 1.000 | 1.000 | 0.812 | 0.858 | 2.1 |
+| A text only (BM25 over facts + messages) | 0.583 | 0.583 | 0.521 | 0.536 | 1.4 |
+| B + entity/hop channels (sum fusion) | 0.938 | 0.938 | 0.762 | 0.806 | 1.4 |
+| C + Personalized PageRank (sum fusion) | 0.979 | 0.979 | 0.837 | 0.872 | 1.9 |
+| D RRF fusion instead of sum | 0.896 | 0.896 | 0.786 | 0.813 | 1.8 |
+| E + MMR | 0.896 | 0.896 | 0.786 | 0.813 | 2.0 |
+| F + exact knapsack packing (ranking only) | 0.896 | 0.896 | 0.786 | 0.813 | 2.2 |
+| **G + evidence gate (production)** | **1.000** | **1.000** | 0.858 | 0.894 | 2.5 |
 | F2 tight budget (350 tok), knapsack | 0.750 | 0.750 | 0.750 | 0.750 | 2.3 |
-| G′ production via FalkorDB | 1.000 | 1.000 | 0.812 | 0.858 | 2.7 |
+| G′ production via FalkorDB | 1.000 | 1.000 | 0.858 | 0.894 | 2.9 |
 
-Rows A-F switch the evidence gate off (`abstain=False`) so they measure ranking only: a baseline allowed to say "I don't know" would be scored on a
-different task. Row G is what ships. These numbers were re-measured after the v3 changes and differ slightly from the v2.1 table (A 0.750 → 0.667, B 0.917 → 0.958,
-p50 8.3 ms → 2.1 ms) because the stop-word list grew (text-only got worse on history questions, entity channels got better) and the warm index no longer holds private memories.
+Rows A-F switch the evidence gate off (`abstain=False`) so they isolate ranking: a baseline allowed to say "I don't know" would be scored on a different task.
+Row G is what ships. Re-measured after the v0.2 changes, so these differ from the v0.1 table (A 0.750, C 1.000, D-F 1.000), and the difference is real and unflattering:
+the new slot-word candidate channel adds plausible-but-wrong *history* candidates to the ranking, which lowers the ranking-only rows D-F on the history questions (0.583),
+and the evidence gate then removes them (row G history 1.0). The gate is therefore doing real work for correctness, not only for abstention.
 
-By question kind (pass rate) — text-only A: as-of 1.0, direct 1.0, history 0.667, **lexical-gap multi-hop 0.0**; production G: all 1.0.
+By question kind (pass rate) — text-only A: as-of 1.0, direct 1.0, history 0.333, **lexical-gap multi-hop 0.0**; production G: all 1.0.
 
 What this shows, including the unflattering parts:
 - The graph is the **only** thing that answers the 12 "lexical-gap" questions (the answer shares no words with the question; it is reached
@@ -65,6 +66,8 @@ A full pass would take ~4 h; it is opt-in and resumable (`membridge extract-llm`
 labels only you can provide.
 
 ## 6. Speed and scale — `eval/latency.py`, `eval/scale.py`
+> **Re-measured for v0.2 on the real archive only:** cold p50 13.8 ms (p95 21.5), repeat p50 28 µs. The evidence gate adds ~11 ms per *new* question (document-frequency counts per query word); the scale figures below were measured **before** the gate and have not been re-run.
+
 Memory-call latency, in-process, wall-clock (the MCP/HTTP transport adds its own fixed cost). *Cold* = a query never seen before;
 *repeat* = the same query again (result cache). The machine is shared with a browser, so single runs vary ±50%; ranges are honest.
 
@@ -99,7 +102,7 @@ Fixes: quadratic known-entity scan; table scans from `IFNULL(...)` in two upsert
 **Target missed:** I aimed for <20 s at 5,000 conversations and got 44 s (5,000 conversations is ~60× the real archive, which consolidates in under a second).
 
 ## 7. Tests
-`uv run pytest` → 311 tests (unit, algorithm properties incl. PPR error bound vs exact power iteration and brute-force knapsack optimality,
+`uv run pytest` → 338 tests (unit, algorithm properties incl. PPR error bound vs exact power iteration and brute-force knapsack optimality,
 real MCP over stdio in separate processes, live FalkorDB parity, API security guards, documented-Cypher execution). mypy `--strict` and ruff clean.
 
 ## 8. Known weaknesses
@@ -121,19 +124,23 @@ the live database is encrypted only while locked; Cursor/VS Code/opencode/ChatGP
 - **Independent client**: the official MCP Inspector CLI (TypeScript SDK) listed all 20 tools, wrote a decision in one process, read it in another, and had an unsafe call refused.
 - **Real-data evaluation tooling** (`gold-init`, `eval-real`): pooled candidate answers for you to judge; refuses to report numbers until ≥10 questions are judged.
 
-## 10. v3: trust, privacy, abstention (measured)
+## 10. v0.2: trust, privacy, abstention (measured)
 Everything below is on **synthetic fixtures** (`tests/`), reproducible with `uv run pytest`; nothing here claims precision on your real data.
-- **Abstention** (`tests/test_abstention.py`, a persona with 18 stored facts): **30 of 30** questions whose answer is not stored are declined (no memories, no raw
-  messages, a plain note); **29 of 30** answerable questions are answered with the right fact (paraphrases like "company" for "works at", "city" for "lives in" are
-  covered by predicate slot words; the miss, "what *programming language* am I learning?", needs the world knowledge that Rust is one, which only the optional embedder has).
+- **Abstention** (`tests/test_abstention.py`, a persona with 18 stored facts): **34 of 34** questions whose answer is not stored are declined (no memories, no raw
+  messages, a plain note), including four added after an independent review because they had produced confident wrong answers ("how much does Atlas cost per month?",
+  "who is the Atlas product manager?", "where is the park?", "Rex"). **32 of 33** answerable questions are answered with the right fact (paraphrases such as
+  "company" for "works at", "city" for "lives in", "who employs me" and "which database did I pick" are covered by predicate slot words and aspect synonyms;
+  the miss, "what *programming language* am I learning?", needs the world knowledge that Rust is one, which only the optional embedder has).
   The old gate (`top score ≥ 0.30` on a score normalised against itself) answered 3 of 3 unanswerable probes with unrelated memories.
-- **On a real 2,062-message archive** (spot checks, not a benchmark): "favourite pizza topping", "salary" and "pet's name" now return nothing instead of unrelated memories;
+- **On a real 2,062-message archive** (spot checks, not a benchmark): "favourite pizza topping", "salary", "pet's name" and "what editor do I use" return nothing;
   "which internship was I selected for?" returns exactly the two matching memories.
-- **Conflicts** (`tests/test_trust.py`, 14 cases): undated provider claims do not overrule dated user statements; A→B→A leaves one current value; two facts in one sentence stay
-  two memories; employers/schools/cities conflict, skills and interests do not; secrets and the sensitivity lexicon have positive and negative cases.
-- **Privacy / consent** (`tests/test_security.py`, 21 cases): 12 read paths return no private text for an agent; grant lifecycle (PIN, expiry, use count, client binding, revocation, rate limit);
-  agents cannot forge trust; forget scrubs every copy; audit chain detects edits and removals; FalkorDB never receives a private memory.
-- **Hardening** (`tests/test_hardening.py`, 10 cases): config lockdown, loopback-only "local" LLM, export without private entities/messages/credentials, lock refusing while the
-  database is open, bounded extraction, raw messages classified on import.
-- **Limits found while measuring:** the answerable miss above; the text-only baseline now fails history questions with the larger stop list (0.667); `restructure` could give
-  only 7 of 151 earlier ChatGPT facts a structured triple (ChatGPT's phrasing is varied, and an unambiguous reading is required); message-anchored support is conversation-level.
+- **Conflicts** (`tests/test_trust.py`, 14 cases + `test_review_fixes.py`, 18): undated provider claims do not overrule dated user statements; an assistant's newer claim waits
+  for you while your statement stays current, however many times it repeats; A→B→A leaves one current value; two facts in one sentence stay two memories; Postgres/PostgreSQL are one value,
+  Visual Studio / Visual Studio Code are two; a dump cannot overrule what you stated; employers/schools/cities conflict, skills and interests do not.
+- **Privacy / consent** (`tests/test_security.py`, 20 cases): 12 read paths return no private text for an agent; private-only entity names and conversation titles are hidden; grant lifecycle
+  (PIN, expiry, use count, client binding, revocation, rate limit); agents cannot forge trust; forget scrubs every copy including the database file's free pages; audit chain detects
+  edits and removals; FalkorDB never receives a private memory, snippet, title or entity.
+- **Hardening** (`tests/test_hardening.py`, 10 cases; `test_api.py`, 19): config lockdown, loopback-only "local" LLM, export without private entities/messages/credentials, lock refusing while
+  the database is open, bounded extraction, raw messages classified on import, dashboard token + PIN-unlocked private session.
+- **Limits found while measuring:** the answerable miss above; the text-only baseline fails history questions (0.333); `restructure` could give only 7 of 151 earlier ChatGPT
+  facts a structured triple (ChatGPT's phrasing is varied, and an unambiguous reading is required); message-anchored support is conversation-level (now only for id-like tokens or two rare words).

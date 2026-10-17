@@ -45,8 +45,12 @@ def test_higher_trust_wins_whatever_the_date(store: Store) -> None:
 def test_newer_agent_claim_against_user_statement_is_left_for_the_user(store: Store) -> None:
     user = upsert(store, cand("Atlas caching uses Redis", "Redis", ts=T0)).memory_id
     agent = upsert(store, cand("Atlas caching uses Valkey", "Valkey", ver="client_asserted", ts=T0 + DAY)).memory_id
-    assert status(store, user) == "unresolved" and status(store, agent) == "unresolved"
+    # the user's statement stays current (an assistant cannot take it out of circulation); only the claim waits for the person
+    assert status(store, user) == "current" and status(store, agent) == "unresolved"
     assert store.conn.execute("SELECT COUNT(*) FROM memory_links WHERE rel='CONTRADICTS'").fetchone()[0] == 1
+    for i in range(5):  # and repeating it changes nothing about what is current
+        upsert(store, cand(f"Atlas caching uses Thing{i}", f"Thing{i}", ver="client_asserted", ts=T0 + (2 + i) * DAY))
+    assert status(store, user) == "current"
 
 
 def test_equal_trust_undated_conflict_is_unresolved_not_guessed(store: Store) -> None:

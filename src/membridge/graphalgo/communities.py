@@ -37,7 +37,7 @@ def build_entity_graph(store: Store) -> nx.Graph[Any]:
     g: nx.Graph[Any] = nx.Graph()
     c = store.conn
     live = {r[0] for r in c.execute("SELECT DISTINCT me.entity_id FROM memory_entities me JOIN memories m ON m.id=me.memory_id "
-                                    "JOIN live_entities e ON e.id=me.entity_id WHERE m.status!='deleted'")}  # fmt: skip
+                                    "JOIN visible_entities e ON e.id=me.entity_id WHERE m.status!='deleted' AND m.sensitivity='normal'")}  # fmt: skip
     for eid in live:
         g.add_node(eid)
 
