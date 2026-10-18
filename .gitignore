@@ -22,3 +22,4 @@ eval/gold_real.json
 eval/results/
 manifest-*.json
 node_modules/
+/submission/

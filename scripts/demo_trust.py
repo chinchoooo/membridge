@@ -71,13 +71,14 @@ def main() -> None:
     print(f"  notice (identical for every query, so it cannot reveal anything): {r['sensitive_notice'][:90]}...")
     try:
         agent.grant_sensitive("123456", "claude-code")
-    except ServiceError as e:
-        print(f"  assistant tries to grant itself access -> refused: {e}")
+    except ServiceError:
+        print("  assistant tries to grant itself access -> refused (only the user can grant access)")
     me.set_pin("246810")
     me.grant_sensitive("246810", "claude-code", minutes=10, uses=2)
     r = agent.search_memory("What do I take for anxiety?", include_sensitive=True)
     print(f"  after your PIN-created grant (10 minutes, 2 reads, this assistant only): {[m['statement'] for m in r['memories']]}")
-    print("  audit:", [(a["action"], a["actor"]) for a in map(dict, store.conn.execute("SELECT action, actor FROM audit_log WHERE action LIKE 'sensitive_%' ORDER BY id"))])
+    rows = store.conn.execute("SELECT action, actor FROM audit_log WHERE action LIKE 'sensitive_%' ORDER BY id")
+    print("  audit log: " + "; ".join(f"{r['action']} by {r['actor']}" for r in rows))
 
     banner("4. An assistant can only ASK to forget; you confirm; the text is really gone")
     mid = me.save_memory("The door code for the office is purple-tangerine", "fact", "user_stated")["memory_id"]

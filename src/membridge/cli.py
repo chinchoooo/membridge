@@ -240,6 +240,7 @@ def summarize_llm() -> None:
 def ask(
     query: str, budget: int = 1500, graph: bool = True,
     private: Annotated[bool, typer.Option("--private", help="Include private memories (asks for your PIN at a hidden prompt)")] = False,
+    short: Annotated[bool, typer.Option("--short", help="A readable answer instead of the full JSON an assistant receives")] = False,
 ) -> None:  # fmt: skip
     """Retrieve context for a question (what an AI client would get)."""
     from .retrieval.engine import Retriever
@@ -250,8 +251,31 @@ def ask(
         _require_pin(store)
         store.audit_sync("cli", "sensitive_access", "ask")
     g = _graph(settings) if graph else None
-    typer.echo(json.dumps(Retriever(store, g).search(query, token_budget=budget, full=private), indent=2, default=str))
+    res = Retriever(store, g).search(query, token_budget=budget, full=private)
+    if short:
+        typer.echo(short_answer(res, query))
+    else:
+        typer.echo(json.dumps(res, indent=2, default=str))
     store.close()
+
+
+def short_answer(res: dict, query: str) -> str:  # type: ignore[type-arg]
+    """The same verdict the dashboard shows: answered (with who vouches for it) or an honest 'nothing stored'."""
+    from .views import VERIFICATION_LABEL
+
+    ms = res["memories"]
+    head = f"Q: {query}"
+    if not res["sufficient_evidence"]:
+        return f"{head}\n  [nothing stored] It has nothing about that, and it will not guess.  ({res['stats']['latency_ms']} ms)"
+    lines = [head, f"  [answered from {len(ms)} {'memory' if len(ms) == 1 else 'memories'}]  ({res['stats']['latency_ms']} ms)"]
+    for m in ms[:3]:
+        tag = "older value, kept as history" if m["status"] == "superseded" else m["status"]
+        lines.append(f"  - {m['statement'][:150]}")
+        lines.append(f"      {tag} | {VERIFICATION_LABEL.get(m['verification'], m['verification'])}")
+    paths = res.get("graph_paths") or []
+    if paths:  # the explanation: how the graph connected the question to the answer
+        lines.append(f"  via the graph: {paths[0][:170]}")
+    return "\n".join(lines)
 
 
 def _hidden(prompt: str) -> str:

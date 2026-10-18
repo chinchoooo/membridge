@@ -71,3 +71,4 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "eval/*" = ["E402"]
+"scripts/video/*" = ["B905", "B007", "UP031"]

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MemBridge teleprompter</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0b0f1a; --fg:#f2f5ff; --dim:#7c89a8; --acc:#35d0ba; --amb:#ffb454; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family: "Segoe UI", system-ui, sans-serif; }
+  #bar { position:fixed; top:0; left:0; right:0; z-index:5; display:flex; gap:14px; align-items:center; padding:10px 18px; background:#111a30ee; border-bottom:1px solid #223; font-size:15px; }
+  #bar button, #bar select { font:inherit; background:#1b2748; color:var(--fg); border:1px solid #33437a; border-radius:8px; padding:6px 14px; cursor:pointer; }
+  #bar input[type=range] { width:160px; }
+  #bar .hint { color:var(--dim); margin-left:auto; }
+  #stage { padding: 110px 8vw 70vh; max-width: 1200px; margin: 0 auto; }
+  .scene { margin: 0 0 14vh; }
+  .scene h2 { color:var(--acc); font-size: 26px; letter-spacing:.04em; text-transform: uppercase; margin: 0 0 6px; }
+  .where { color:var(--dim); font-size: 20px; margin-bottom: 22px; }
+  .say p { font-size: var(--size, 44px); line-height: 1.45; margin: 0 0 .7em; }
+  .live { color:var(--amb); }
+  .pause { margin: 4vh 0 0; padding: 18px; border: 3px dashed var(--amb); color: var(--amb); font-size: 30px; font-weight: 700; text-align: center; border-radius: 14px; }
+  .note { color: var(--amb); font-size: 26px; font-style: italic; }
+  .q { color: var(--acc); }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="go">Start (space)</button>
+  <label>speed <input id="speed" type="range" min="1" max="12" value="4"></label>
+  <label>size <input id="size" type="range" min="28" max="72" value="44"></label>
+  <button id="top">Top</button>
+  <span class="hint">Read the white text. Orange = do something / stay silent for 2 seconds.</span>
+</div>
+<div id="stage">
+
+<div class="scene">
+  <h2>Scene 1 · The problem</h2><div class="where">Voice-over. Title card, then the three problems.</div>
+  <div class="say">
+    <p>Every AI assistant now keeps a memory about you. But it is a list you can't read, can't correct, and can't take with you. And it will happily answer questions you never gave it the answer to.</p>
+    <p>I built MemBridge so that memory is yours: on your own machine, with proof of where every fact came from, and an honest <span class="q">"I don't know."</span></p>
+  </div>
+  <div class="pause">STAY SILENT FOR 2 SECONDS</div>
+</div>
+
+<div class="scene">
+  <h2>Scene 2 · A new user's first minute</h2><div class="where">Voice-over. Terminal install, then the Ask box.</div>
+  <div class="say">
+    <p>This is what a new user sees. One command to install, one to start. No cloning, no Node, no Docker.</p>
+    <p>It loads a made-up person and answers questions. Ask where this person works: it answers, and shows that one line came from ChatGPT's summary, so it is kept as history, while what the user said themselves stays current.</p>
+    <p>Now ask for a favourite pizza topping. Nothing was ever stored, so it says so, instead of guessing.</p>
+  </div>
+  <div class="pause">STAY SILENT FOR 2 SECONDS</div>
+</div>
+
+<div class="scene">
+  <h2 class="live">Scene 3 · The real thing, with my own ChatGPT</h2><div class="where live">LIVE screen recording: talk while you do it. See RECORDING_GUIDE.md, section B.</div>
+  <div class="say">
+    <p class="note">[On chatgpt.com, in your account. Terminal ready beside it.]</p>
+    <p>Now the real thing, with my own ChatGPT. ChatGPT already remembers things about me.</p>
+    <p>I run <span class="q">membridge dump-prompt</span>, and paste it into ChatGPT. It lists everything it knows about me.</p>
+    <p class="note">[While it generates: "I'll speed this part up."  Copy the reply. Save it. Import it.]</p>
+    <p>I copy that, save it, and import it. MemBridge stores each line as ChatGPT's belief, not as something I said. And the health and money lines are marked private automatically, so you won't see them here.</p>
+    <p>Let me ask something I did tell it: <span class="q">[your first question].</span> It answers, and shows where it came from.</p>
+    <p>Now something nobody ever told it: what is my favourite pizza topping? Nothing stored, and it doesn't guess. That "no" is the feature.</p>
+  </div>
+  <div class="pause">STAY SILENT FOR 2 SECONDS</div>
+</div>
+
+<div class="scene">
+  <h2>Scene 4 · Why a graph, and where FalkorDB fits</h2><div class="where">Voice-over. Architecture diagram, Graph tab, the "no shared words" card.</div>
+  <div class="say">
+    <p>Under the hood, memory is a graph in FalkorDB: people, projects, decisions, conversations, and the exact messages each fact came from.</p>
+    <p>Here is why that matters. Ask: what did I change after the ZX0 timeout? No stored fact shares a word with that question, so text search finds nothing. But the graph hops from the message, to its conversation, to the project, to the decision.</p>
+    <p>On my benchmark, text search answers none of those twelve questions. The FalkorDB graph answers all twelve.</p>
+    <p>I use FalkorDB for Cypher paths I can explain to the user, full-text and vector indexes, and PageRank and community detection for the big picture. SQLite stays the source of truth, so the graph is rebuildable, and answers are identical if it is down.</p>
+  </div>
+  <div class="pause">STAY SILENT FOR 2 SECONDS</div>
+</div>
+
+<div class="scene">
+  <h2>Scene 5 · Trust and privacy</h2><div class="where">Voice-over. Terminal trust demo, then unlocking private memories in the dashboard.</div>
+  <div class="say">
+    <p>A memory has to be trustworthy. If ChatGPT's summary and I disagree, I win, and its version is kept as history.</p>
+    <p>Health, money and family facts are hidden from every assistant by default. Here an assistant tries to grant itself access: refused. I set a PIN, and give this one assistant ten minutes and two reads.</p>
+    <p>When an assistant wants something forgotten, it can only ask. I confirm, and the text is gone from the database file, not just hidden.</p>
+  </div>
+  <div class="pause">STAY SILENT FOR 2 SECONDS</div>
+</div>
+
+<div class="scene">
+  <h2>Scene 6 · Try it, and the proof</h2><div class="where">Voice-over. Live sandbox, numbers card, links.</div>
+  <div class="say">
+    <p>You can try it right now. There is a read-only sandbox on made-up data, or install it with one command.</p>
+    <p>It has <span class="tests">THREE HUNDRED AND FIFTY-FOUR</span> automated tests, green on Linux and Windows, and two independent security reviews, with every finding fixed.</p>
+    <p>MemBridge: memory you own, that knows what it doesn't know.</p>
+  </div>
+  <div class="pause">STAY SILENT FOR 3 SECONDS, THEN STOP RECORDING</div>
+</div>
+
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let running = false, last = 0;
+  const speed = () => Number($('speed').value) * 14;   // pixels per second
+  function tick(t) {
+    if (running) { window.scrollBy(0, speed() * (t - last) / 1000); }
+    last = t; requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+  function toggle() { running = !running; $('go').textContent = running ? 'Pause (space)' : 'Start (space)'; }
+  $('go').onclick = toggle;
+  $('top').onclick = () => { running = false; $('go').textContent = 'Start (space)'; window.scrollTo(0, 0); };
+  $('size').oninput = () => document.documentElement.style.setProperty('--size', $('size').value + 'px');
+  window.addEventListener('keydown', (e) => { if (e.code === 'Space') { e.preventDefault(); toggle(); } });
+</script>
+</body>
+</html>

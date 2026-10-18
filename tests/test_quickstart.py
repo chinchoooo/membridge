@@ -91,3 +91,11 @@ def test_the_assistant_connection_command_points_at_this_python() -> None:
     import sys
 
     assert sys.executable in qs.mcp_command() and "MEMBRIDGE_CLIENT_NAME=claude-code" in qs.mcp_command()
+
+
+def test_ask_short_is_readable_and_honest(home: Path) -> None:
+    runner.invoke(app, ["quickstart", "--demo", "--yes", "--no-serve"])
+    ok = runner.invoke(app, ["ask", "What database does Atlas use now?", "--short", "--no-graph"]).output
+    assert "[answered from" in ok and "SQLite" in ok and "you said it" in ok and "{" not in ok
+    no = runner.invoke(app, ["ask", "What is my favourite pizza topping?", "--short", "--no-graph"]).output
+    assert "[nothing stored]" in no and "will not guess" in no
