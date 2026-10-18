@@ -16,6 +16,8 @@ MemBridge is deliberately **not** a multi-user hosted service: the point is that
 - 90 requests per minute per client address (429 after that); strict security headers; a `Host` allow-list.
 - No semantic-model download, no outbound calls.
 
+**Live:** https://membridge-sandbox.onrender.com (Render free tier: the first visit after idle takes about a minute to wake).
+
 ## Run it locally
 ```bash
 docker compose --profile sandbox up -d sandbox      # http://127.0.0.1:8080

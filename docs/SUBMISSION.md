@@ -12,7 +12,7 @@ FalkorDB graph on top, and treats memory as something that must be *trustworthy*
 - **Privacy by construction:** health, money, identity-document and family facts are absent from every default view (search, graph, summaries, exports); an assistant gets them only under a PIN-created, short, single-client, use-counted grant; every access is audited in a hash-chained log; `forget` really erases the text, including from the file.
 - **Portability:** a prompt (`docs/CHATGPT_DUMP_PROMPT.md`) turns what ChatGPT knows about you into an importable dump while you wait for the official export.
 
-**Try it (1 minute, nothing to install first).** Hosted read-only sandbox on synthetic data: <SANDBOX_URL>. Locally:
+**Try it (1 minute, nothing to install first).** Hosted read-only sandbox on synthetic data: https://membridge-sandbox.onrender.com. Locally:
 `uvx --from git+https://github.com/chinchoooo/membridge membridge quickstart --demo` (guided first run; `quickstart` without `--demo` does it on your own export).
 
 **Developer try-out (5 minutes).** `uv sync && docker compose up -d && uv run python scripts/demo.py` (six-step walkthrough, synthetic data) and `uv run python scripts/demo_trust.py` (trust, consent, forgetting; no Docker needed).

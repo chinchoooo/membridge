@@ -21,7 +21,7 @@ weaknesses we found.
 uvx --from git+https://github.com/chinchoooo/membridge membridge quickstart --demo     # on made-up data, nothing personal needed
 uvx --from git+https://github.com/chinchoooo/membridge membridge quickstart            # on your own history (guided; nothing leaves your computer)
 ```
-No git clone, no Node, no Docker needed. A hosted **read-only sandbox on synthetic data**: <SANDBOX_URL>. Walkthrough: [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md);
+No git clone, no Node, no Docker needed. A hosted **read-only sandbox on synthetic data**: https://membridge-sandbox.onrender.com. Walkthrough: [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md);
 how the sandbox is built, and why your own instance must never be public: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ## Developer setup (Windows/macOS/Linux)
