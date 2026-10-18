@@ -25,6 +25,7 @@ from .models import (
     entity_id,
     memory_id,
     normalize_statement,
+    sensitivity_of,
     sha,
     trust_rank,
 )
@@ -338,6 +339,9 @@ def _reinstate(store: Store, mid: str, c: Candidate) -> None:
 
 
 def _create(store: Store, c: Candidate, dk: str, now: float) -> Outcome:
+    # Safe by construction: whatever the caller says, text the privacy lexicon flags is never stored as ordinary.
+    if c.sensitivity != "sensitive" and sensitivity_of(c.statement) == "sensitive":
+        c.sensitivity = "sensitive"
     mid = memory_id(dk)
     ts = c.ts if c.ts is not None else now
     base_pred = (c.predicate or "").split(":")[0]

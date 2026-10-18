@@ -25,6 +25,11 @@ Found by an adversarial architecture review; each item has a regression test.
 - Exports exclude private entities/messages and redact credentials; PPR cache snapshot race fixed; agent-triggered consolidation is bounded; derived rebuilds coalesced.
 - Schema migration 7.
 
+### 0.2.0, public release prep
+- `membridge quickstart [--demo]` guided first run; `membridge dump-prompt`; installs with `uvx --from git+https://github.com/chinchoooo/membridge ...` (dashboard bundled in the package, synthetic demo data packaged, no Node needed).
+- `membridge sandbox` / `Dockerfile.sandbox`: a public read-only demo on synthetic data (no login, rate-limited, server details hidden, security headers, Host allow-list); `fly.toml`, `render.yaml`, compose profile, CI workflow.
+- `upsert` never stores text the privacy lexicon flags as ordinary, whatever the caller says.
+
 ### 0.2.0, second pass (independent re-review)
 - Private-only entities and private conversation titles are invisible; FalkorDB gets no private snippet/title/entity; forget and mark-private rebuild communities and summaries, drop orphan entities, compact the index and scrub free pages (`secure_delete`).
 - Dashboard: seeing/exporting private memories needs the PIN (ten-minute session); access log off; CLI `--public`/`--sensitive` need the PIN at a real terminal.

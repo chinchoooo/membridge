@@ -12,7 +12,10 @@ FalkorDB graph on top, and treats memory as something that must be *trustworthy*
 - **Privacy by construction:** health, money, identity-document and family facts are absent from every default view (search, graph, summaries, exports); an assistant gets them only under a PIN-created, short, single-client, use-counted grant; every access is audited in a hash-chained log; `forget` really erases the text, including from the file.
 - **Portability:** a prompt (`docs/CHATGPT_DUMP_PROMPT.md`) turns what ChatGPT knows about you into an importable dump while you wait for the official export.
 
-**Try it (5 minutes).** `uv sync && docker compose up -d && uv run python scripts/demo.py` (six-step walkthrough, synthetic data) and `uv run python scripts/demo_trust.py` (trust, consent, forgetting; no Docker needed).
+**Try it (1 minute, nothing to install first).** Hosted read-only sandbox on synthetic data: <SANDBOX_URL>. Locally:
+`uvx --from git+https://github.com/chinchoooo/membridge membridge quickstart --demo` (guided first run; `quickstart` without `--demo` does it on your own export).
+
+**Developer try-out (5 minutes).** `uv sync && docker compose up -d && uv run python scripts/demo.py` (six-step walkthrough, synthetic data) and `uv run python scripts/demo_trust.py` (trust, consent, forgetting; no Docker needed).
 Dashboard: `uv run membridge serve` prints a link with a per-launch access token.
 
 **Evidence.** 338 automated tests (unit, algorithm properties, real MCP over stdio in separate processes, live FalkorDB parity, API security, 60+ privacy/trust regressions), mypy `--strict` and ruff clean,
@@ -25,4 +28,5 @@ Docker image built and run (non-root, loopback-only, token required, healthcheck
 - Verified clients: Claude Code, the Python MCP SDK client and the official MCP Inspector CLI. Cursor / VS Code / opencode / ChatGPT / hosted connectors are unverified.
 - The live database is plaintext while unlocked (`membridge lock` encrypts at rest). The PIN protects the MCP and dashboard path; a shell-capable program running as you can open the file.
 - A new question costs ~14 ms on a 2,000-message archive (the evidence gate adds ~11 ms); large-scale latency was not re-measured after the gate.
+- The hosted sandbox is deliberately not a service for real data: it is read-only, synthetic, rate-limited and public. Your own instance has one user and must never be exposed (`docs/DEPLOY.md`).
 - The POSIX branch of the vault open-marker lock is standard `flock` but was not run on this (Windows) machine.

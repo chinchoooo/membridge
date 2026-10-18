@@ -1,0 +1,11 @@
+# Render blueprint for the PUBLIC SANDBOX (synthetic data, read-only). New > Blueprint > point at this repo.
+services:
+  - type: web
+    name: membridge-sandbox
+    runtime: docker
+    dockerfilePath: ./Dockerfile.sandbox
+    healthCheckPath: /api/ping
+    plan: free
+    envVars:
+      - key: MEMBRIDGE_PUBLIC_HOST
+        sync: false   # set to your *.onrender.com hostname after the first deploy

@@ -1,10 +1,13 @@
-# Demo script and video plan (about 7 minutes)
+# Demo script and video plan (about 9 minutes)
 
 Reproduce everything: `docker compose up -d && uv run python scripts/demo.py` (add `--claude` to use the real Claude Code CLI as the first MCP client).
 It uses a synthetic archive (`samples/`), a throw-away data dir (`.membridge-demo/`) and prints a transcript of all six steps.
 
 | Time | Show | Say |
 |---|---|---|
+| 0:00 | **A normal user's first minute.** Fresh terminal: `uvx --from git+https://github.com/chinchoooo/membridge membridge quickstart --demo` | "No clone, no Node, no Docker. It tells me each step, answers three questions, and notes what it did *not* touch." Pause on the pizza question: "it says it has nothing." |
+| 1:20 | Same wizard, last step: the dashboard opens from a private link | "A link with a one-time token: nobody else on this machine can use it." Show the banner-free dashboard on the demo store. |
+| 1:50 | The hosted sandbox in a browser (open the public URL) | "Anyone can look without installing: made-up data, read-only. Try the Retrieval tab, then 'show private' with the published PIN." |
 | 0:00 | Dashboard overview of a real import (counts, failed records, "big picture") | "My AI history is scattered across providers. MemBridge migrates it once into a store I own." |
 | 0:40 | Step 1: `membridge import` (dry-run, real import, second import = no-op) | "Streaming, resumable, idempotent, and malformed records are reported, not hidden." |
 | 1:10 | Step 2 in the Retrieval tab: *Why did I stop using Postgres for Atlas?* | "Facts come from different conversations; each links to the exact original words." Click Open source conversation. |

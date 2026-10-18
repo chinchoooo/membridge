@@ -36,6 +36,20 @@ services:
       - membridge-data:/data
     restart: unless-stopped
 
+  # Optional: `docker compose --profile sandbox up -d sandbox` runs the public-demo build locally on http://127.0.0.1:8080 (synthetic data only).
+  sandbox:
+    profiles: ["sandbox"]
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    image: membridge-sandbox:latest
+    container_name: membridge-sandbox
+    environment:
+      MEMBRIDGE_PUBLIC_HOST: localhost
+    ports:
+      - "127.0.0.1:${MEMBRIDGE_SANDBOX_PORT:-8080}:8080"
+    restart: unless-stopped
+
 volumes:
   membridge-graph:
   membridge-data:

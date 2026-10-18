@@ -1,0 +1,16 @@
+# The PUBLIC demo: synthetic data only, read-only for visitors, no login, rate-limited. It never mounts or reads a user data directory.
+# Build:  docker build -f Dockerfile.sandbox -t membridge-sandbox .      Run:  docker run -p 8080:8080 -e MEMBRIDGE_PUBLIC_HOST=localhost membridge-sandbox
+FROM python:3.13-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
+RUN pip install --no-cache-dir uv
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md LICENSE ./
+COPY src ./src
+RUN uv sync --frozen --no-dev
+# No graph database in the sandbox (Graph tab says so); behind a platform proxy the client address is the first X-Forwarded-For.
+ENV MEMBRIDGE_IN_CONTAINER=1 MEMBRIDGE_SANDBOX=1 MEMBRIDGE_TRUST_PROXY=1 MEMBRIDGE_FALKOR_HOST=127.0.0.1 PORT=8080
+RUN useradd --create-home app
+USER app
+EXPOSE 8080
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s CMD ["/bin/sh", "-c", "/app/.venv/bin/python -c \"import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8080')+'/api/ping', timeout=4)\""]
+CMD ["/bin/sh", "-c", "exec /app/.venv/bin/membridge sandbox --host 0.0.0.0 --port ${PORT:-8080}"]

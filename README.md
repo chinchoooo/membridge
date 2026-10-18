@@ -16,7 +16,15 @@ What makes the graph matter: on a 48-question multi-hop benchmark, text-only ret
 with the query (0/12); the graph-based system answers all of them. See [`docs/EVAL.md`](docs/EVAL.md) for every measured number and the
 weaknesses we found.
 
-## Quick start (Windows/macOS/Linux)
+## Try it in one command
+```bash
+uvx --from git+https://github.com/chinchoooo/membridge membridge quickstart --demo     # on made-up data, nothing personal needed
+uvx --from git+https://github.com/chinchoooo/membridge membridge quickstart            # on your own history (guided; nothing leaves your computer)
+```
+No git clone, no Node, no Docker needed. A hosted **read-only sandbox on synthetic data**: <SANDBOX_URL>. Walkthrough: [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md);
+how the sandbox is built, and why your own instance must never be public: [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
+## Developer setup (Windows/macOS/Linux)
 
 Prerequisites: Python 3.11+, [uv](https://docs.astral.sh/uv/), Docker, Node 20+ (dashboard only).
 

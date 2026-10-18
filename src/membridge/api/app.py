@@ -8,11 +8,13 @@ Destructive actions use a two-step confirmation that only this (human) interface
 
 from __future__ import annotations
 
+import collections
 import hmac
 import json
 import os
 import re
 import secrets
+import tempfile
 import threading
 import time
 import uuid
@@ -37,6 +39,16 @@ MUTATING_HEADER = "x-membridge"
 COOKIE = "mb_token"
 PRIV_COOKIE = "mb_priv"  # proof that the PIN was entered recently
 PRIV_TTL = 600
+# Hosted sandbox (synthetic data only): everything is read-only except these, and these leak nothing about the server.
+SANDBOX_POST = {"/api/retrieve", "/api/private/unlock", "/api/private/lock"}
+SANDBOX_HIDDEN = {"/api/health", "/api/clients", "/api/audit/verify", "/api/forget-requests", "/api/private/status"}
+SANDBOX_RATE = (90, 60.0)  # requests per window (seconds) per client address
+SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
+                               "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
 LOOPBACK = frozenset({"127.0.0.1", "localhost", "[::1]"})
 
 
@@ -124,9 +136,18 @@ class ExportIn(BaseModel):
     include_sensitive: bool = False
 
 
-def create_app(settings: Settings | None = None, *, token: str | None = None, extra_hosts: frozenset[str] = frozenset()) -> FastAPI:
-    s = settings or Settings()
+def create_app(settings: Settings | None = None, *, token: str | None = None, extra_hosts: frozenset[str] = frozenset(),
+               sandbox: bool | None = None) -> FastAPI:  # fmt: skip
+    """`sandbox=True` (or MEMBRIDGE_SANDBOX=1) is the public demo: a throw-away store of SYNTHETIC data, read-only for visitors, no token,
+    rate-limited. It never opens the user's own data directory."""
+    sandbox = sandbox if sandbox is not None else os.environ.get("MEMBRIDGE_SANDBOX") == "1"
+    s = Settings(data_dir=Path(tempfile.mkdtemp(prefix="membridge-sandbox-"))) if sandbox else (settings or Settings())
     store = Store(s.db_path)
+    if sandbox:
+        from ..demo_data import SANDBOX_PIN, seed_demo_store
+
+        seed_demo_store(store)
+        access.set_pin(store, SANDBOX_PIN)
     graph = GraphStore(s.falkor_host, s.falkor_port, s.falkor_graph)
     svc = MemoryService(store, graph, actor="dashboard", human=True)
     jobs: dict[str, dict[str, Any]] = {}
@@ -136,7 +157,24 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
         raise ValueError("the dashboard token must be at least 16 characters")
     app.state.token = access_token
     app.state.store, app.state.svc = store, svc
-    hosts = LOOPBACK | extra_hosts
+    public = frozenset(h.strip().lower() for h in os.environ.get("MEMBRIDGE_PUBLIC_HOST", "").split(",") if h.strip())
+    hosts = LOOPBACK | extra_hosts | public
+    trust_proxy = os.environ.get("MEMBRIDGE_TRUST_PROXY") == "1"  # behind a platform proxy the real client is the first X-Forwarded-For
+    hits: dict[str, collections.deque[float]] = {}
+
+    def rate_limited(request: Request) -> bool:
+        fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip() if trust_proxy else ""
+        ip = fwd or (request.client.host if request.client else "?")
+        now, q = time.monotonic(), hits.setdefault(ip, collections.deque())
+        while q and now - q[0] > SANDBOX_RATE[1]:
+            q.popleft()
+        if len(q) >= SANDBOX_RATE[0]:
+            return True
+        q.append(now)
+        if len(hits) > 5000:  # bound the table
+            for k in [k for k, v in hits.items() if not v or now - v[-1] > SANDBOX_RATE[1]][:2500]:
+                hits.pop(k, None)
+        return False
 
     def priv_cookie() -> str:
         exp = int(time.time()) + PRIV_TTL
@@ -156,6 +194,8 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
             raise HTTPException(403, "Private memories need your PIN: unlock them in Maintenance -> Private memories.")
 
     def authorised(request: Request) -> bool:
+        if sandbox:
+            return True  # public by design; protected by being read-only, synthetic and rate-limited
         bearer = request.headers.get("authorization", "")
         presented = bearer[7:] if bearer.lower().startswith("bearer ") else request.cookies.get(COOKIE, "")
         return bool(presented) and hmac.compare_digest(presented, access_token)
@@ -169,7 +209,15 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
         origin = request.headers.get("origin")
         if origin and origin != "null" and (origin.split("://", 1)[-1].rsplit(":", 1)[0].lower() not in hosts):
             return JSONResponse({"error": "origin not allowed"}, status_code=403)
-        if request.url.path == "/" and request.query_params.get("token"):  # the link `membridge serve` prints
+        path = request.url.path
+        if sandbox and path.startswith("/api/"):
+            if path in SANDBOX_HIDDEN or path.startswith(("/api/exports", "/api/imports")):
+                return JSONResponse({"error": "not available in the sandbox"}, status_code=404)
+            if request.method not in ("GET", "HEAD") and path not in SANDBOX_POST:
+                return JSONResponse({"error": "This is a read-only sandbox on synthetic data. Install MemBridge locally to change things: see the README."}, status_code=403)
+            if rate_limited(request):
+                return JSONResponse({"error": "slow down a little"}, status_code=429, headers={"Retry-After": "30"})
+        if request.url.path == "/" and request.query_params.get("token") and not sandbox:  # the link `membridge serve` prints
             if hmac.compare_digest(request.query_params["token"], access_token):
                 r = RedirectResponse("/", status_code=303)
                 r.set_cookie(COOKIE, access_token, httponly=True, samesite="strict", path="/")
@@ -179,13 +227,24 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
             return JSONResponse({"error": "unauthorised: open the link printed by `membridge serve`"}, status_code=401)
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and MUTATING_HEADER not in request.headers:
             return JSONResponse({"error": f"missing {MUTATING_HEADER} header"}, status_code=403)
-        return await call_next(request)
+        response = await call_next(request)
+        for k, v in SECURITY_HEADERS.items():
+            response.headers.setdefault(k, v)
+        return response
 
     @app.exception_handler(ServiceError)
     async def _svc_err(_: Request, e: ServiceError) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=400)
 
     # ---- overview / health -------------------------------------------------------
+    @app.get("/api/sandbox")
+    def api_sandbox() -> dict[str, Any]:
+        if not sandbox:
+            return {"sandbox": False}
+        from ..demo_data import SANDBOX_PIN
+
+        return {"sandbox": True, "pin": SANDBOX_PIN, "note": "Synthetic data, read-only. The PIN is public here; on your own machine it is yours alone."}
+
     @app.get("/api/ping")
     def api_ping() -> dict[str, bool]:  # liveness only (container healthcheck): reveals nothing about the data
         return {"ok": True}
@@ -298,6 +357,8 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
         from ..memory.filters import build_filters
         from ..retrieval.engine import RetrievalConfig, Retriever
 
+        if sandbox and body.use_vector:
+            raise HTTPException(400, "semantic search is off in the sandbox (it needs a model download)")
         filters = build_filters({k: v for k, v in (("as_of", body.as_of), ("known_at", body.known_at), ("category", body.category), ("project", body.project)) if v})
         with store.lock:
             emb = None
@@ -445,7 +506,10 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
 
         return client_configs(s)
 
-    web = Path(__file__).resolve().parents[3] / "web" / "dist"
+    # the bundle shipped inside the package (works after `pip install` / `uvx`), else a fresh `npm run build` in a source checkout
+    web = Path(__file__).resolve().parents[1] / "_web"
+    if not web.is_dir():
+        web = Path(__file__).resolve().parents[3] / "web" / "dist"
     if web.is_dir():
         app.mount("/", StaticFiles(directory=web, html=True), name="web")
     return app

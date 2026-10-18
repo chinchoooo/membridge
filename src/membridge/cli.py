@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -92,6 +91,41 @@ def seed(
     store = Store(Settings().db_path)
     typer.echo(json.dumps(seed_from_claude_export(store, zips, replace=replace)))
     store.close()
+
+
+@app.command()
+def quickstart(
+    demo: Annotated[bool, typer.Option("--demo", help="Try it on synthetic data in a separate store; nothing personal needed")] = False,
+    export: Annotated[Path | None, typer.Option(help="A ChatGPT/Claude export to import (.zip, folder or conversations.json)")] = None,
+    yes: Annotated[bool, typer.Option("--yes", help="Do not ask questions; take the safe defaults")] = False,
+    no_serve: Annotated[bool, typer.Option("--no-serve", help="Do not start the dashboard at the end")] = False,
+    port: int = 8787,
+) -> None:
+    """Guided first run: import your history, see what it learned, set a PIN, connect an assistant, open the dashboard."""
+    from . import quickstart as qs
+
+    settings = Settings() if (not demo or "MEMBRIDGE_DATA_DIR" in os.environ) else Settings(data_dir=Path.home() / ".membridge-demo")
+    qs.run(settings, demo=demo, export=export, yes=yes, serve=None if no_serve else (lambda: qs.open_dashboard(port=port)))
+
+
+@app.command("dump-prompt")
+def dump_prompt() -> None:
+    """Print the prompt that makes ChatGPT list everything it remembers about you (paste its reply into a file, then `seed-text`)."""
+    from . import quickstart as qs
+
+    typer.echo(qs.prompt_text())
+
+
+@app.command()
+def sandbox(host: str = "127.0.0.1", port: int = 8080) -> None:
+    """Run the PUBLIC demo: synthetic data only, read-only, no login, rate-limited. Never touches your own data folder."""
+    import uvicorn
+
+    if host not in ("127.0.0.1", "localhost", "::1") and os.environ.get("MEMBRIDGE_IN_CONTAINER") != "1":
+        typer.secho("Refusing to bind a non-loopback address outside the official container.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2)
+    os.environ["MEMBRIDGE_SANDBOX"] = "1"
+    uvicorn.run("membridge.api.app:create_app", factory=True, host=host, port=port, log_level="warning", access_log=False)
 
 
 @app.command("restructure")
@@ -221,13 +255,9 @@ def ask(
 
 
 def _hidden(prompt: str) -> str:
-    """A hidden prompt that only a person at a terminal can answer: stdin must be a real TTY (getpass quietly falls back
-    to reading a pipe on some platforms, which would let a program feed it)."""
-    import getpass
+    from .term import hidden
 
-    if not sys.stdin.isatty():
-        raise EOFError("this needs an interactive terminal")
-    return getpass.getpass(prompt)
+    return hidden(prompt)
 
 
 def _require_pin(store: Store) -> None:

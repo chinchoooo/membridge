@@ -1,0 +1,51 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    services:
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports: ["6390:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - run: uv run ruff check src tests eval scripts
+      - run: uv run mypy src
+      - run: uv run pytest -q
+
+  windows:  # the open-marker lock has a Windows and a POSIX branch: run the suite on both
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - run: uv run pytest -q tests/test_hardening.py tests/test_security.py tests/test_sandbox.py tests/test_api.py
+
+  dashboard-bundle:  # the committed bundle must match the source it was built from
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: cd web && npm ci --no-audit --no-fund
+      - run: python scripts/sync_web.py
+      - run: git diff --exit-code -- src/membridge/_web
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t membridge .
+      - run: docker build -f Dockerfile.sandbox -t membridge-sandbox .
+      - name: sandbox answers, is read-only and hides server details
+        run: |
+          docker run -d --name sb -p 8080:8080 -e MEMBRIDGE_PUBLIC_HOST=localhost membridge-sandbox
+          for i in $(seq 1 30); do curl -sf localhost:8080/api/ping && break; sleep 2; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/api/overview)" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'x-membridge: 1' localhost:8080/api/backup)" = 403
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/api/health)" = 404

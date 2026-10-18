@@ -4,6 +4,7 @@ import Memories from "./views/Memories";
 import Maintenance from "./views/Maintenance";
 import Retrieval from "./views/Retrieval";
 import BigPicture from "./views/BigPicture";
+import { api, Rec } from "./api";
 
 // The graph library is large; load it only when the Graph tab is opened.
 const GraphView = lazy(() => import("./views/GraphView"));
@@ -28,6 +29,8 @@ export default function App() {
   const [tab, setTab] = useState<Tab>(init.tab);
   const [memoryId, setMemoryId] = useState<string | null>(init.tab === "memories" ? init.arg : null);
   const [graphCenter, setGraphCenter] = useState<string | null>(init.tab === "graph" ? init.arg : null);
+  const [sandbox, setSandbox] = useState<Rec | null>(null);
+  useEffect(() => { api("/api/sandbox").then((d) => d.sandbox && setSandbox(d)).catch(() => undefined); }, []);
 
   useEffect(() => {
     const arg = tab === "memories" ? memoryId : tab === "graph" ? graphCenter : null;
@@ -45,6 +48,13 @@ export default function App() {
 
   return (
     <div className="app">
+      {sandbox && (
+        <div className="confirm">
+          <b>Public sandbox.</b> Everything here is synthetic and read-only. Try the <b>Retrieval test</b> tab (ask “What is my favourite pizza topping?” and watch it decline),
+          open <b>Memories</b> and tick “show private” (it needs the PIN, which is <code>{sandbox.pin}</code> here). To use MemBridge on your own history, install it locally:
+          <code> uvx --from git+https://github.com/chinchoooo/membridge membridge quickstart</code>
+        </div>
+      )}
       <header>
         <h1>MemBridge</h1>
         <nav>
