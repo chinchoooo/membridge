@@ -51,7 +51,10 @@ export default function Memories({ selected, onSelect, onGraph }: Props) {
           </label>
         </div>
         {err && <p className="error">{err}</p>}
-        <p className="muted">{list ? `${list.total} memories` : "Loading…"}</p>
+        <p className="muted">
+          {list ? `${list.total} memories` : "Loading…"}
+          {(list?.private_hidden ?? 0) > 0 && list && !showPrivate && <span className="lockchip" title="Hidden from every assistant; you can see them here after entering your PIN"> · 🔒 {list.private_hidden} private hidden</span>}
+        </p>
         {list?.items.map((m: Rec) => (
           <div key={m.id} className={`item ${selected === m.id ? "sel" : ""} ${m.status}`} onClick={() => onSelect(m.id)}>
             <div>{m.statement}</div>

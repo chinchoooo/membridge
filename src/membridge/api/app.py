@@ -9,6 +9,7 @@ Destructive actions use a two-step confirmation that only this (human) interface
 from __future__ import annotations
 
 import collections
+import contextlib
 import hmac
 import json
 import os
@@ -41,7 +42,7 @@ PRIV_COOKIE = "mb_priv"  # proof that the PIN was entered recently
 PRIV_TTL = 600
 # Hosted sandbox (synthetic data only): everything is read-only except these, and these leak nothing about the server.
 SANDBOX_POST = {"/api/retrieve", "/api/private/unlock", "/api/private/lock"}
-SANDBOX_HIDDEN = {"/api/health", "/api/clients", "/api/audit/verify", "/api/forget-requests", "/api/private/status"}
+SANDBOX_HIDDEN = {"/api/health", "/api/clients", "/api/audit/verify", "/api/forget-requests"}
 SANDBOX_RATE = (90, 60.0)  # requests per window (seconds) per client address
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
@@ -148,7 +149,11 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
 
         seed_demo_store(store)
         access.set_pin(store, SANDBOX_PIN)
-    graph = GraphStore(s.falkor_host, s.falkor_port, s.falkor_graph)
+    # The sandbox has its OWN graph name: on a machine that also runs the owner's FalkorDB it must never read (or rebuild) their real graph.
+    graph = GraphStore(s.falkor_host, s.falkor_port, "membridge_sandbox" if sandbox else s.falkor_graph)
+    if sandbox and graph.available():
+        with contextlib.suppress(Exception):
+            graph.rebuild(store)  # shows the Graph tab when FalkorDB is around (locally); hosted without it, the tab says so
     svc = MemoryService(store, graph, actor="dashboard", human=True)
     jobs: dict[str, dict[str, Any]] = {}
     app = FastAPI(title="MemBridge", docs_url=None, redoc_url=None, openapi_url=None)
@@ -156,7 +161,7 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
     if len(access_token) < 16:
         raise ValueError("the dashboard token must be at least 16 characters")
     app.state.token = access_token
-    app.state.store, app.state.svc = store, svc
+    app.state.store, app.state.svc, app.state.graph = store, svc, graph
     # the public hostname: named explicitly, or announced by the platform (Render sets RENDER_EXTERNAL_HOSTNAME, Fly sets FLY_APP_NAME)
     announced = [os.environ.get("RENDER_EXTERNAL_HOSTNAME", "")] + ([f"{os.environ['FLY_APP_NAME']}.fly.dev"] if os.environ.get("FLY_APP_NAME") else [])
     public = frozenset(h.strip().lower() for h in [*os.environ.get("MEMBRIDGE_PUBLIC_HOST", "").split(","), *announced] if h.strip())
@@ -289,7 +294,9 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
                     args.append(val)
             total = store.conn.execute(f"SELECT COUNT(*) FROM ({sql})", args).fetchone()[0]
             rows = store.conn.execute(sql + " ORDER BY score DESC LIMIT ? OFFSET ?", [*args, limit, max(0, offset)]).fetchall()
-        return {"items": [dict(r) for r in rows], "total": total}
+            hidden = 0 if show_private else store.conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE status!='deleted' AND sensitivity!='normal'").fetchone()[0]
+        return {"items": [dict(r) for r in rows], "total": total, "private_hidden": hidden}
 
     @app.get("/api/memories/{memory_id}")
     def memory_detail(memory_id: str, request: Request) -> dict[str, Any]:

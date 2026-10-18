@@ -44,8 +44,10 @@ def test_nothing_can_be_changed_or_exfiltrated_by_a_visitor(sb: TestClient) -> N
     ]:
         r = getattr(sb, method)(path, headers=H, **({"json": body} if body is not None else {}))
         assert r.status_code in (403, 404), (method, path, r.status_code)
-    for path in ("/api/health", "/api/clients", "/api/exports/membridge-export-1.json", "/api/imports/x", "/api/private/status", "/api/audit/verify"):
+    for path in ("/api/health", "/api/clients", "/api/exports/membridge-export-1.json", "/api/imports/x", "/api/audit/verify", "/api/forget-requests"):
         assert sb.get(path).status_code == 404, path  # nothing about the server: paths, memory use, jobs, grants
+    status = sb.get("/api/private/status").json()  # needed by the unlock box; reveals only that a PIN exists and that nobody holds a grant
+    assert status["pin_set"] is True and status["grants"] == []
     assert set(SANDBOX_POST) == {"/api/retrieve", "/api/private/unlock", "/api/private/lock"}
 
 
@@ -99,3 +101,11 @@ def test_platform_announced_hostnames_are_accepted_without_configuration(monkeyp
     app = create_app(sandbox=True)
     assert TestClient(app, base_url="http://mb-demo.fly.dev").get("/api/sandbox").status_code == 200
     assert TestClient(app, base_url="http://evil.example").get("/api/sandbox").status_code == 403
+
+
+def test_the_sandbox_never_touches_the_owners_real_graph() -> None:
+    from membridge.config import Settings
+
+    app = create_app(sandbox=True)
+    assert app.state.graph.name == "membridge_sandbox" != Settings().falkor_graph
+    assert "membridge-sandbox-" in str(app.state.store.path)

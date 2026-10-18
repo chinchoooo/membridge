@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { api, Rec, when } from "../api";
+import AskBox from "../components/AskBox";
 
-export default function Overview() {
+const DEMO_EXAMPLES = ["What database does Atlas use now?", "Where do I work?", "What is my favourite pizza topping?"];
+const OWN_EXAMPLES = ["What am I working on overall?", "Where do I work or study?", "What did I decide about my main project?"];
+
+export default function Overview({ sandbox = false, onOpenMemory }: { sandbox?: boolean; onOpenMemory?: (id: string) => void }) {
   const [d, setD] = useState<Rec | null>(null);
   const [err, setErr] = useState("");
 
@@ -26,10 +30,12 @@ export default function Overview() {
   );
   return (
     <div>
+      <AskBox examples={sandbox ? DEMO_EXAMPLES : OWN_EXAMPLES} onOpenMemory={onOpenMemory} />
       <div className="cards">
         {card("Conversations", s.conversations)}
         {card("Messages", s.messages, `${d.messages_with_limitations} with omitted content`)}
         {card("Memories", s.memories, `${s.memories_current} current · ${s.memories_superseded} superseded · ${s.memories_unresolved} unresolved`)}
+        {s.memories_private != null && card("Private", s.memories_private, "hidden from every assistant unless you grant access")}
         {card("Entities", s.entities)}
         {card("Graph nodes", g ? Object.entries(g).filter(([k]) => k.startsWith("nodes_")).reduce((a, [, v]) => a + (v as number), 0) : "offline")}
         {card("Graph relationships", g ? (g as Rec).edges : "offline", g ? "" : "start FalkorDB: docker compose up -d")}
@@ -61,6 +67,7 @@ export default function Overview() {
             </tbody>
           </table>
           <h3>Failed or incomplete records ({s.import_errors})</h3>
+          <p className="muted">A record that cannot be read is listed here, never dropped silently.</p>
           {d.import_errors.length === 0 && <p className="muted">None.</p>}
           <ul>
             {d.import_errors.map((e: Rec, i: number) => (

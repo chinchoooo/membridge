@@ -31,6 +31,22 @@ export default function App() {
   const [graphCenter, setGraphCenter] = useState<string | null>(init.tab === "graph" ? init.arg : null);
   const [sandbox, setSandbox] = useState<Rec | null>(null);
   useEffect(() => { api("/api/sandbox").then((d) => d.sandbox && setSandbox(d)).catch(() => undefined); }, []);
+  // deep links (#graph/<id>, #retrieval, #memories/<id>) navigate even when the page is already open
+  useEffect(() => {
+    const onHash = () => {
+      const h = fromHash();
+      setTab(h.tab);
+      if (h.tab === "memories") setMemoryId(h.arg);
+      if (h.tab === "graph") setGraphCenter(h.arg);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const [present, setPresent] = useState(() => { try { return localStorage.getItem("mb_present") === "1"; } catch { return false; } });
+  useEffect(() => {
+    document.body.classList.toggle("present", present);
+    try { localStorage.setItem("mb_present", present ? "1" : "0"); } catch { /* private mode */ }
+  }, [present]);
 
   useEffect(() => {
     const arg = tab === "memories" ? memoryId : tab === "graph" ? graphCenter : null;
@@ -49,10 +65,9 @@ export default function App() {
   return (
     <div className="app">
       {sandbox && (
-        <div className="confirm">
-          <b>Public sandbox.</b> Everything here is synthetic and read-only. Try the <b>Retrieval test</b> tab (ask “What is my favourite pizza topping?” and watch it decline),
-          open <b>Memories</b> and tick “show private” (it needs the PIN, which is <code>{sandbox.pin}</code> here). To use MemBridge on your own history, install it locally:
-          <code> uvx --from git+https://github.com/chinchoooo/membridge membridge quickstart</code>
+        <div className="banner">
+          <b>Public sandbox</b>, synthetic and read-only. Ask a question below, then open <b>Memories</b> and tick “show private” (the PIN is <code>{sandbox.pin}</code> here).
+          Install it for your own history: <code>uvx --from git+https://github.com/chinchoooo/membridge membridge quickstart</code>
         </div>
       )}
       <header>
@@ -64,12 +79,13 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <span className="muted">local-first · your data stays on this machine</span>
+        <span className="muted">{sandbox ? "synthetic demo data" : "local-first · your data stays on this machine"}</span>
+        <button className="chip present" title="Larger text for screen sharing and video" onClick={() => setPresent(!present)}>{present ? "Normal size" : "Presentation size"}</button>
       </header>
       <main>
         {tab === "overview" && (
           <>
-            <Overview />
+            <Overview sandbox={!!sandbox} onOpenMemory={openMemory} />
             <BigPicture />
           </>
         )}
