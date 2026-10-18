@@ -61,5 +61,5 @@ needs a hidden prompt that a program without a terminal cannot answer.
 - Audit-chain forks are possible if two processes append in the same instant (reported as a break; investigate before assuming tampering). Ordinary read audits are buffered for about two seconds and can be lost if the server is killed; private-data events are written immediately.
 - If a message's branch is abandoned after a re-import (an edited reply), memories already extracted from it stay; only future extraction follows the current branch.
 - Term-frequency counts used to prune full-text queries include private rows (a very weak side channel); results never do.
-- The open-marker lock is tested on Windows here; the POSIX branch uses standard `flock` but has not been run on this machine.
+- The vault open-marker lock has a Windows branch (byte-range locks) and a POSIX branch (`flock`); both run in CI (Windows and Linux). macOS is untested.
 - Remote exposure and ChatGPT/other hosted-client connectors are unverified (see `CLIENTS.md`).

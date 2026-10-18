@@ -18,7 +18,7 @@ FalkorDB graph on top, and treats memory as something that must be *trustworthy*
 **Developer try-out (5 minutes).** `uv sync && docker compose up -d && uv run python scripts/demo.py` (six-step walkthrough, synthetic data) and `uv run python scripts/demo_trust.py` (trust, consent, forgetting; no Docker needed).
 Dashboard: `uv run membridge serve` prints a link with a per-launch access token.
 
-**Evidence.** 338 automated tests (unit, algorithm properties, real MCP over stdio in separate processes, live FalkorDB parity, API security, 60+ privacy/trust regressions), mypy `--strict` and ruff clean,
+**Evidence.** 354 automated tests (unit, algorithm properties, real MCP over stdio in separate processes, live FalkorDB parity, API security, 60+ privacy/trust regressions), mypy `--strict` and ruff clean,
 Docker image built and run (non-root, loopback-only, token required, healthcheck). Two independent adversarial reviews by a separate model found 26 + 17 issues; all were fixed and each has a regression test
 (`docs/threat-model.md` lists what is and is not protected).
 
@@ -29,4 +29,4 @@ Docker image built and run (non-root, loopback-only, token required, healthcheck
 - The live database is plaintext while unlocked (`membridge lock` encrypts at rest). The PIN protects the MCP and dashboard path; a shell-capable program running as you can open the file.
 - A new question costs ~14 ms on a 2,000-message archive (the evidence gate adds ~11 ms); large-scale latency was not re-measured after the gate.
 - The hosted sandbox is deliberately not a service for real data: it is read-only, synthetic, rate-limited and public. Your own instance has one user and must never be exposed (`docs/DEPLOY.md`).
-- The POSIX branch of the vault open-marker lock is standard `flock` but was not run on this (Windows) machine.
+- Tested on Windows (developer machine and CI) and Linux (CI, with a real FalkorDB); macOS is not tested.
