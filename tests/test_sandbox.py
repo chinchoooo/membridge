@@ -66,12 +66,15 @@ def test_the_private_gate_can_be_tried_with_the_published_pin(sb: TestClient) ->
     assert len(priv) >= 3 and any("sertraline" in i["statement"] or "antidepressant" in i["statement"] for i in priv)
 
 
-def test_it_is_rate_limited_per_client() -> None:
-    app = create_app(sandbox=True)
-    c = TestClient(app, base_url="http://127.0.0.1")
-    codes = [c.get("/api/overview").status_code for _ in range(SANDBOX_RATE[0] + 5)]
-    assert 429 in codes and codes[: SANDBOX_RATE[0]].count(200) == SANDBOX_RATE[0]
+def test_it_is_rate_limited_per_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    import membridge.api.app as appmod
+
+    monkeypatch.setattr(appmod, "SANDBOX_RATE", (5, 3600.0))  # independent of how fast the machine is
+    c = TestClient(create_app(sandbox=True), base_url="http://127.0.0.1")
+    codes = [c.get("/api/overview").status_code for _ in range(8)]
+    assert codes[:5] == [200] * 5 and codes[5:] == [429] * 3
     assert c.get("/api/overview").status_code == 429  # and it stays limited until the window passes
+    assert SANDBOX_RATE[0] >= 30  # the production limit is generous enough for a person browsing
 
 
 def test_security_headers_and_host_checks(sb: TestClient) -> None:

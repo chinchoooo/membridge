@@ -57,6 +57,11 @@ testpaths = ["tests"]
 strict = true
 files = ["src"]
 
+[[tool.mypy.overrides]]
+# optional extras (`embeddings`, `leiden`): not installed everywhere, imported lazily
+module = ["fastembed", "fastembed.*", "igraph", "igraph.*", "leidenalg", "leidenalg.*"]
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 120
 
