@@ -157,7 +157,9 @@ def create_app(settings: Settings | None = None, *, token: str | None = None, ex
         raise ValueError("the dashboard token must be at least 16 characters")
     app.state.token = access_token
     app.state.store, app.state.svc = store, svc
-    public = frozenset(h.strip().lower() for h in os.environ.get("MEMBRIDGE_PUBLIC_HOST", "").split(",") if h.strip())
+    # the public hostname: named explicitly, or announced by the platform (Render sets RENDER_EXTERNAL_HOSTNAME, Fly sets FLY_APP_NAME)
+    announced = [os.environ.get("RENDER_EXTERNAL_HOSTNAME", "")] + ([f"{os.environ['FLY_APP_NAME']}.fly.dev"] if os.environ.get("FLY_APP_NAME") else [])
+    public = frozenset(h.strip().lower() for h in [*os.environ.get("MEMBRIDGE_PUBLIC_HOST", "").split(","), *announced] if h.strip())
     hosts = LOOPBACK | extra_hosts | public
     trust_proxy = os.environ.get("MEMBRIDGE_TRUST_PROXY") == "1"  # behind a platform proxy the real client is the first X-Forwarded-For
     hits: dict[str, collections.deque[float]] = {}

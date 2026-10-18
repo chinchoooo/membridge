@@ -24,16 +24,15 @@ uv run membridge sandbox                              # http://127.0.0.1:8080
 ```
 
 ## Deploy the sandbox
-Set `MEMBRIDGE_PUBLIC_HOST` to the hostname visitors use, otherwise the host check (which blocks DNS rebinding) refuses it.
+The host check (which blocks DNS rebinding) accepts only the hostname the platform announces (Render: `RENDER_EXTERNAL_HOSTNAME`, Fly: `<FLY_APP_NAME>.fly.dev`) or `MEMBRIDGE_PUBLIC_HOST` (comma-separated) for any other host.
 
 **Fly.io**
 ```bash
 fly auth login
 fly launch --no-deploy --copy-config --name <your-app>   # uses fly.toml + Dockerfile.sandbox
-fly secrets set MEMBRIDGE_PUBLIC_HOST=<your-app>.fly.dev
 fly deploy
 ```
-**Render**: New > Blueprint > this repo (`render.yaml`), then set `MEMBRIDGE_PUBLIC_HOST` to the `*.onrender.com` hostname.
+**Render**: New > Blueprint > this repo (`render.yaml`). Nothing else to set.
 **Any Docker host**: `docker build -f Dockerfile.sandbox -t membridge-sandbox .` then `docker run -p 80:8080 -e MEMBRIDGE_PUBLIC_HOST=demo.example.org membridge-sandbox` behind HTTPS.
 Cold start builds the synthetic store in about 2 seconds; free tiers that sleep will take a moment on the first visit.
 

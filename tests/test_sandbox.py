@@ -88,3 +88,14 @@ def test_a_public_host_must_be_named_explicitly(monkeypatch: pytest.MonkeyPatch)
     c = TestClient(create_app(sandbox=True), base_url="http://demo.example.org")
     assert c.get("/api/sandbox").status_code == 200
     assert TestClient(c.app, base_url="http://other.example.org").get("/api/sandbox").status_code == 403
+
+
+def test_platform_announced_hostnames_are_accepted_without_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MEMBRIDGE_PUBLIC_HOST", raising=False)
+    monkeypatch.setenv("RENDER_EXTERNAL_HOSTNAME", "membridge-sandbox.onrender.com")
+    assert TestClient(create_app(sandbox=True), base_url="http://membridge-sandbox.onrender.com").get("/api/sandbox").status_code == 200
+    monkeypatch.delenv("RENDER_EXTERNAL_HOSTNAME")
+    monkeypatch.setenv("FLY_APP_NAME", "mb-demo")
+    app = create_app(sandbox=True)
+    assert TestClient(app, base_url="http://mb-demo.fly.dev").get("/api/sandbox").status_code == 200
+    assert TestClient(app, base_url="http://evil.example").get("/api/sandbox").status_code == 403

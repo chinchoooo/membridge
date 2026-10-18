@@ -1,5 +1,5 @@
 # Fly.io config for the PUBLIC SANDBOX (synthetic data, read-only). Deploy:  fly launch --no-deploy --copy-config --name <your-app>  &&  fly deploy
-# Set the hostname the app is served under so the Host check accepts it:  fly secrets set MEMBRIDGE_PUBLIC_HOST=<your-app>.fly.dev
+# The app accepts <app>.fly.dev automatically (FLY_APP_NAME).
 app = "membridge-sandbox"
 primary_region = "iad"
 
